@@ -316,3 +316,33 @@ To deliver instantaneous 1-step solid creation and eliminate fragile sketch extr
 - **Live Verification**: Direct execution verified live in FreeCAD:
   `Created AdditiveBox: Box (100.00x100.00x100.00mm) in Body: Body`
   `Bounding box of Body: X: 0.00 to 100.00 mm, Y: 0.00 to 100.00 mm, Z: 0.00 to 100.00 mm`
+
+
+---
+
+## 12. History Text Selection & LaTeX Markdown Sanitization
+
+### 1. Overview
+Two developer experience refinements were implemented in the conversation history cards:
+1. **Full Text Selection & Copy Support**: All text elements inside the conversational stream—including tool execution badges (`⚡ Executing: ...`), structured JSON result cards (`✔ Result`, `❌ Error`, key-value lines), Python code boxes, selection badges, and error banners—now have mouse text selection flags enabled (`TextSelectableByMouse`), allowing developers to highlight and copy details directly with `Ctrl+C`.
+2. **LaTeX Math Sanitization**: Qt's CommonMark Markdown engine does not render LaTeX math syntax (e.g. `$X$: $0.00 \text{ mm}$ to $900.00 \text{ mm}$`). The Copilot now combines prompt-level guidelines forbidding LaTeX output with an automated text sanitizer (`clean_markdown_text`) that transforms LaTeX variables and units into clean, human-readable plain text (`X: 0.00 mm to 900.00 mm`).
+
+### 2. Implementation Details
+1. **Selection Flags Across All History Widgets (`AICopilot/ui/dock_widget.py`)**:
+   - `FormattedCodeBox`: Enabled `TextSelectableByMouse | TextSelectableByKeyboard` on code editor and header labels.
+   - `FormattedResultCard`: Added `TextSelectableByMouse` to header, tool badge, key-value rows, and string fallbacks.
+   - `WorkSection`: Added `TextSelectableByMouse` to live tool execution commands and notices.
+   - `TurnCardWidget`: Added `TextSelectableByMouse` to selection badge, turn error box, and user prompt.
+   - `SystemMessageWidget`: Added `TextSelectableByMouse` to info messages.
+2. **Markdown LaTeX Sanitizer (`clean_markdown_text` in `dock_widget.py`)**:
+   - Strips `\text{...}`, `\mathrm{...}`, `\mathbf{...}`.
+   - Converts `\times` $\to$ `x`, `\approx` $\to$ `~`, `\pm` $\to$ `+/-`, `\leq`/`\geq` $\to$ `<=`/`>=`.
+   - Unwraps inline `$ ... $` and block `$$ ... $$` math delimiters.
+   - Collapses spacing before units (`0.00  mm` $\to$ `0.00 mm`).
+   - Hooked into `TurnCardWidget.append_response_token` and `TurnCardWidget.finish_turn`.
+3. **Agent System Instruction (`AICopilot/ui/agent_worker.py`)**:
+   - Explicitly instructs Gemini in Guideline 8 to output clean plain text or standard Markdown and avoid LaTeX math markup.
+
+### 3. Verification
+- **Unit Tests**: All 40 unit tests in `tests/unit/test_copilot_dock_widget.py` pass (`0.35s`), verifying both `clean_markdown_text` behavior and `TextSelectableByMouse` flags across all history widgets.
+- **Live FreeCAD Verification**: Verified live in running FreeCAD instance.
