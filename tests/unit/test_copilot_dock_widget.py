@@ -105,3 +105,26 @@ def test_init_gui_dock_widget_lifecycle(mock_freecad, monkeypatch):
         fake_dock.close.assert_called_once()
         fake_dock.deleteLater.assert_called_once()
         assert service.dock_widget is None
+
+
+def test_copilot_agent_worker_model_default_and_setter():
+    from AICopilot.ui.agent_worker import CopilotAgentWorker
+
+    worker = CopilotAgentWorker(tool_bridge=MagicMock())
+    assert worker.model_name == "gemini-3.6-flash"
+
+    worker.set_model_name("models/gemini-3.8-flash")
+    assert worker.model_name == "gemini-3.8-flash"
+
+    worker.set_model_name("gemini-3.7-flash")
+    assert worker.model_name == "gemini-3.7-flash"
+
+
+def test_copilot_dock_widget_default_models():
+    from AICopilot.ui.dock_widget import DEFAULT_GEMINI_MODELS
+
+    assert "gemini-3.6-flash" in DEFAULT_GEMINI_MODELS
+    assert "gemini-3.7-flash" in DEFAULT_GEMINI_MODELS
+    assert "gemini-3.8-flash" in DEFAULT_GEMINI_MODELS
+    assert "gemini-3.1-pro-preview" in DEFAULT_GEMINI_MODELS
+

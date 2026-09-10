@@ -73,7 +73,7 @@ class CopilotAgentWorker(QtCore.QThread):
     def __init__(
         self,
         tool_bridge: DirectToolBridge,
-        model_name: str = "gemini-2.5-flash",
+        model_name: str = "gemini-3.6-flash",
         api_key: Optional[str] = None,
         parent: Optional[QtCore.QObject] = None,
     ):
@@ -95,7 +95,11 @@ class CopilotAgentWorker(QtCore.QThread):
         self.api_key = api_key
 
     def set_model_name(self, model_name: str):
-        self.model_name = model_name
+        if model_name:
+            clean = model_name.strip()
+            if clean.startswith("models/"):
+                clean = clean[len("models/"):]
+            self.model_name = clean
 
     def clear_history(self):
         with self._queue_lock:

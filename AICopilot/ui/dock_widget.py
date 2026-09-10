@@ -9,6 +9,7 @@ import html
 import logging
 import os
 import re
+import threading
 from typing import Any, Dict, List, Optional
 
 try:
@@ -27,6 +28,17 @@ from .agent_worker import CopilotAgentWorker, ToolCallRequest
 from .tool_bridge import DirectToolBridge
 
 logger = logging.getLogger("AICopilot.DockWidget")
+
+DEFAULT_GEMINI_MODELS = [
+    "gemini-3.6-flash",
+    "gemini-3.7-flash",
+    "gemini-3.8-flash",
+    "gemini-3.1-pro-preview",
+    "gemini-3.5-flash",
+    "gemini-3.5-flash-lite",
+    "gemini-flash-latest",
+    "gemini-pro-latest",
+]
 
 
 class ChatInputTextEdit(QtWidgets.QPlainTextEdit):
@@ -67,6 +79,8 @@ class SelectionObserver:
 class AICopilotDockWidget(QtWidgets.QDockWidget):
     """Native FreeCAD dock widget hosting the embedded AI Copilot assistant."""
 
+    sig_models_discovered = QtCore.Signal(list)
+
     def __init__(self, parent=None):
         super().__init__("AI Copilot", parent)
         self.setObjectName("AICopilotDockWidget")
@@ -80,6 +94,7 @@ class AICopilotDockWidget(QtWidgets.QDockWidget):
         self._init_ui()
         self._wire_signals()
         self._attach_selection_observer()
+        self._refresh_models_from_api()
 
         # Start the background worker thread
         self.worker.start()
@@ -103,7 +118,8 @@ class AICopilotDockWidget(QtWidgets.QDockWidget):
         toolbar.setSpacing(4)
 
         self.model_combo = QtWidgets.QComboBox()
-        self.model_combo.addItems(["gemini-2.5-flash", "gemini-2.5-pro"])
+        self.model_combo.setEditable(True)
+        self.model_combo.addItems(DEFAULT_GEMINI_MODELS)
         self.model_combo.setCurrentText(self.worker.model_name)
         self.model_combo.currentTextChanged.connect(self.worker.set_model_name)
         toolbar.addWidget(self.model_combo, stretch=1)
@@ -176,6 +192,7 @@ class AICopilotDockWidget(QtWidgets.QDockWidget):
         self._append_system_message("<b>FreeCAD AI Copilot ready.</b> Type a prompt or select geometry in the 3D view.")
 
     def _wire_signals(self):
+        self.sig_models_discovered.connect(self._apply_model_list)
         self.worker.sig_token.connect(self._on_token_received)
         self.worker.sig_status.connect(self._on_status_changed)
         self.worker.sig_tool_started.connect(self._on_tool_started)
@@ -301,8 +318,76 @@ class AICopilotDockWidget(QtWidgets.QDockWidget):
                 param.SetString("GeminiApiKey", key.strip())
                 self.worker.set_api_key(key.strip())
                 self._append_system_message("Gemini API key updated successfully.")
+                self._refresh_models_from_api()
             except Exception as e:
                 self._append_system_message(f"Failed to save API key: {e}")
+
+    # ── Dynamic Model Discovery ──────────────────────────────────────
+
+    def _refresh_models_from_api(self):
+        """Asynchronously query Gemini API for available models and update combobox."""
+        api_key = self.worker._resolve_api_key()
+        if not api_key:
+            return
+
+        def fetch_models():
+            try:
+                from google import genai
+                client = genai.Client(api_key=api_key)
+                fetched = []
+                for m in client.models.list():
+                    name = m.name or ""
+                    if name.startswith("models/"):
+                        name = name[len("models/"):]
+                    # Skip deprecated 2.5 and 1.x models for new users
+                    if name.startswith("gemini-2.5-") or name.startswith("gemini-1.") or name.startswith("gemini-2.0"):
+                        continue
+                    actions = m.supported_actions or []
+                    if "generateContent" in actions:
+                        if any(skip in name for skip in ["-image", "-tts", "transcribe", "clip", "robotics", "embedding"]):
+                            continue
+                        fetched.append(name)
+
+                if fetched:
+                    priority = [
+                        "gemini-3.6-flash",
+                        "gemini-3.7-flash",
+                        "gemini-3.8-flash",
+                        "gemini-3.1-pro-preview",
+                        "gemini-3.5-flash",
+                        "gemini-3.5-flash-lite",
+                        "gemini-flash-latest",
+                        "gemini-pro-latest",
+                    ]
+                    def sort_key(item):
+                        if item in priority:
+                            return (0, priority.index(item))
+                        return (1, item)
+                    fetched.sort(key=sort_key)
+
+                    self.sig_models_discovered.emit(fetched)
+            except Exception as e:
+                logger.debug(f"Could not dynamically refresh models: {e}")
+
+        t = threading.Thread(target=fetch_models, daemon=True)
+        t.start()
+
+    @QtCore.Slot(list)
+    def _apply_model_list(self, models: List[str]):
+        """Update the model combobox with fetched models preserving current selection."""
+        current = self.model_combo.currentText().strip()
+        self.model_combo.blockSignals(True)
+        try:
+            self.model_combo.clear()
+            self.model_combo.addItems(models)
+            if current and current in models:
+                self.model_combo.setCurrentText(current)
+            elif current:
+                self.model_combo.setEditText(current)
+            elif models:
+                self.model_combo.setCurrentIndex(0)
+        finally:
+            self.model_combo.blockSignals(False)
 
     # ── Worker Signal Handlers ───────────────────────────────────────
 
