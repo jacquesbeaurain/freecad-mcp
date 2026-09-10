@@ -87,8 +87,15 @@ The **Embedded AI Copilot** is a native FreeCAD dock panel that integrates Googl
 - **Inspect Geometry**: Type `What are the bounding box dimensions of Wood_Plank?`
 - **Modify Geometry**: Select a face in the 3D view, then type `Pocket this face by 5mm.`
 
-### 3. Undo / Revert
-- If an AI operation produces unexpected results, click `↩ Undo` in the toolbar or press `Ctrl+Z` to immediately roll back the document to its prior state.
+### 3. Undo / Revert & Atomic Turn Transactions
+- Every user request is wrapped in an **atomic turn transaction**. If an operation involves multiple steps (e.g. creating a sketch, adding constraints, and cutting a pocket), FreeCAD groups them into a single undo unit.
+- Clicking `↩ Undo` or pressing `Ctrl+Z` reverses the entire multi-step operation in a single step.
+- If an operation fails midway (due to rate limits, invalid geometry, or clicking `⏹ Stop`), all intermediate objects are automatically discarded and the document is cleanly rolled back to its pre-turn state.
+
+### 4. Quota and Rate Limit Handling (429)
+- **Free Tier Limits**: Free Google AI Studio API keys have a strict limit of 15–20 requests per minute (RPM). Multi-turn operations can quickly exhaust this quota.
+- **Smart Auto-Resume**: If a 429 quota limit is encountered, the copilot automatically pauses, displays a countdown in the status bar (e.g. `Rate limit: resuming in 28s...`), and resumes seamlessly when the quota window resets.
+- **Eliminating Rate Limits**: To avoid rate limit pauses entirely, enable pay-as-you-go billing in Google AI Studio or Google Cloud Console. This raises the quota to **1,000–2,000 RPM** at minimal cost (~$0.10 per million tokens on Flash models).
 
 ---
 
