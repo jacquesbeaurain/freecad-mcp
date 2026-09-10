@@ -31,7 +31,9 @@ The **Embedded AI Copilot** is a native FreeCAD dock panel that integrates Googl
 5. **Integrated Preferences & Security**:
    - Store your Gemini API key via the `⚙ Key` button in the panel toolbar.
    - Securely persisted in FreeCAD User Parameters (`BaseApp/Preferences/AICopilot/GeminiApiKey`).
-   - Supports model switching between `gemini-2.5-flash` and `gemini-2.5-pro`.
+   - Supports Gemini 3.x models (`gemini-3.6-flash`, `gemini-3.7-flash`, `gemini-3.8-flash`, `gemini-3.1-pro-preview`, `gemini-flash-latest`, `gemini-pro-latest`).
+   - Editable model selector allows typing or pasting any custom/preview model ID.
+   - Automatic dynamic model discovery queries available models from your API key upon startup and key update.
 
 ---
 
@@ -41,7 +43,7 @@ The **Embedded AI Copilot** is a native FreeCAD dock panel that integrates Googl
 ┌────────────────────────────────────────────────────────┐
 │  AI Copilot                                      🗖 🗙  │
 ├────────────────────────────────────────────────────────┤
-│ [gemini-2.5-flash ▼]  [↩ Undo]  [⚙ Key]  [🗑 Clear]     │
+│ [gemini-3.6-flash ▼]  [↩ Undo]  [⚙ Key]  [🗑 Clear]     │
 ├────────────────────────────────────────────────────────┤
 │ 🎯 Selected: Wood_Plank (Face1)                        │
 ├────────────────────────────────────────────────────────┤
@@ -88,3 +90,4 @@ The **Embedded AI Copilot** is a native FreeCAD dock panel that integrates Googl
 For in-depth architectural details, threading diagrams, and security specifications, see:
 - [`EMBEDDED_AI_COPILOT_ARCHITECTURE.md`](file:///D:/repos/oth/FreeCADOther/freecad-mcp/docs/EMBEDDED_AI_COPILOT_ARCHITECTURE.md)
 - [`EMBEDDED_AI_COPILOT_PLAN.md`](file:///D:/repos/oth/FreeCADOther/freecad-mcp/docs/EMBEDDED_AI_COPILOT_PLAN.md)
+
