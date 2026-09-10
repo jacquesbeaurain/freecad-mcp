@@ -3,7 +3,8 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 #
 # Embedded PySide DockWidget providing direct conversational interaction,
-# live 3D selection awareness, and in-memory CAD tool execution.
+# live 3D selection awareness, collapsible thought/work sections,
+# and in-memory CAD tool execution.
 
 import ast
 import html
@@ -153,10 +154,337 @@ class SelectionObserver:
         self.callback()
 
 
+# ── Collapsible History Sections ─────────────────────────────────────
+
+class CollapsibleSection(QtWidgets.QWidget):
+    """Collapsible container with a clickable header button and expandable frame."""
+
+    def __init__(self, title: str, parent: Optional[QtWidgets.QWidget] = None):
+        super().__init__(parent)
+        self.title_text = title
+        self._is_expanded = True
+
+        self._main_layout = QtWidgets.QVBoxLayout(self)
+        self._main_layout.setContentsMargins(0, 2, 0, 2)
+        self._main_layout.setSpacing(2)
+
+        self.toggle_btn = QtWidgets.QToolButton(self)
+        self.toggle_btn.setCheckable(True)
+        self.toggle_btn.setChecked(True)
+        self.toggle_btn.setToolButtonStyle(QtCore.Qt.ToolButtonTextBesideIcon)
+        self.toggle_btn.setCursor(QtCore.Qt.PointingHandCursor)
+        self.toggle_btn.setStyleSheet(
+            """
+            QToolButton {
+                border: none;
+                font-size: 11px;
+                font-weight: 600;
+                color: #8fa1b3;
+                background: rgba(128, 128, 128, 0.08);
+                border-radius: 4px;
+                text-align: left;
+                padding: 4px 8px;
+            }
+            QToolButton:hover {
+                background: rgba(128, 128, 128, 0.16);
+                color: #d1d8e0;
+            }
+            """
+        )
+        self.toggle_btn.clicked.connect(self._on_toggle_clicked)
+        self._main_layout.addWidget(self.toggle_btn)
+
+        self.content_frame = QtWidgets.QFrame(self)
+        self.content_frame.setFrameShape(QtWidgets.QFrame.NoFrame)
+        self.content_layout = QtWidgets.QVBoxLayout(self.content_frame)
+        self.content_layout.setContentsMargins(10, 4, 4, 4)
+        self.content_layout.setSpacing(4)
+        self._main_layout.addWidget(self.content_frame)
+
+        self._update_arrow()
+
+    def _update_arrow(self):
+        arrow = "▼" if self._is_expanded else "▶"
+        self.toggle_btn.setText(f"{arrow}  {self.title_text}")
+
+    def _on_toggle_clicked(self):
+        self.set_collapsed(self._is_expanded)
+
+    def set_collapsed(self, collapsed: bool):
+        self._is_expanded = not collapsed
+        self.content_frame.setVisible(self._is_expanded)
+        self.toggle_btn.setChecked(self._is_expanded)
+        self._update_arrow()
+
+    def set_title(self, title: str):
+        self.title_text = title
+        self._update_arrow()
+
+
+class ThoughtSection(CollapsibleSection):
+    """Collapsible section displaying model reasoning/thinking tokens."""
+
+    def __init__(self, parent: Optional[QtWidgets.QWidget] = None):
+        super().__init__("Thinking...", parent)
+        self.thought_edit = QtWidgets.QPlainTextEdit(self.content_frame)
+        self.thought_edit.setReadOnly(True)
+        self.thought_edit.setLineWrapMode(QtWidgets.QPlainTextEdit.WidgetWidth)
+        self.thought_edit.setMaximumHeight(140)
+        self.thought_edit.setStyleSheet(
+            """
+            QPlainTextEdit {
+                background: rgba(0, 0, 0, 0.15);
+                border: 1px solid rgba(128, 128, 128, 0.2);
+                border-radius: 4px;
+                font-family: Consolas, 'Courier New', monospace;
+                font-size: 11px;
+                color: #a4b0be;
+                padding: 4px;
+            }
+            """
+        )
+        self.content_layout.addWidget(self.thought_edit)
+
+    def append_thought(self, text: str):
+        cursor = self.thought_edit.textCursor()
+        cursor.movePosition(QtGui.QTextCursor.End)
+        self.thought_edit.setTextCursor(cursor)
+        self.thought_edit.insertPlainText(text)
+        cursor.movePosition(QtGui.QTextCursor.End)
+        self.thought_edit.setTextCursor(cursor)
+        self.thought_edit.ensureCursorVisible()
+
+    def finish(self, duration: float):
+        dur_str = f"{max(duration, 0.1):.1f}s"
+        self.set_title(f"Thought ({dur_str})")
+        self.set_collapsed(True)
+
+
+class WorkSection(CollapsibleSection):
+    """Collapsible section displaying executed tools, results, and operation notices."""
+
+    def __init__(self, parent: Optional[QtWidgets.QWidget] = None):
+        super().__init__("Working...", parent)
+        self._tool_count = 0
+
+    def add_tool_call(self, tool_name: str, args: dict):
+        self._tool_count += 1
+        args_summary = ", ".join(f"{k}={v}" for k, v in list(args.items())[:3])
+        if len(args) > 3:
+            args_summary += ", ..."
+        lbl = QtWidgets.QLabel(self.content_frame)
+        lbl.setWordWrap(True)
+        lbl.setTextFormat(QtCore.Qt.RichText)
+        lbl.setStyleSheet("font-family: Consolas, monospace; font-size: 11px; color: #54a0ff; margin: 1px 0;")
+        lbl.setText(f"⚡ <b>Executing:</b> {html.escape(tool_name)}({html.escape(args_summary)})")
+        self.content_layout.addWidget(lbl)
+        cmd_word = "command" if self._tool_count == 1 else "commands"
+        self.set_title(f"Working ({self._tool_count} {cmd_word})...")
+
+    def add_tool_result(self, tool_name: str, result_str: str):
+        preview = result_str[:200] + ("..." if len(result_str) > 200 else "")
+        lbl = QtWidgets.QLabel(self.content_frame)
+        lbl.setWordWrap(True)
+        lbl.setTextFormat(QtCore.Qt.RichText)
+        lbl.setStyleSheet("font-family: Consolas, monospace; font-size: 11px; color: #1dd1a1; margin: 1px 0 4px 8px;")
+        lbl.setText(f"✔ <b>Result:</b> {html.escape(preview)}")
+        self.content_layout.addWidget(lbl)
+
+    def add_notice(self, notice_text: str):
+        lbl = QtWidgets.QLabel(self.content_frame)
+        lbl.setWordWrap(True)
+        lbl.setTextFormat(QtCore.Qt.RichText)
+        lbl.setText(f"<div style='color: #ff9f43; font-size: 11px; margin: 2px 0;'>{notice_text}</div>")
+        self.content_layout.addWidget(lbl)
+
+    def finish(self, duration: float, count: int):
+        cmd_word = "command" if count == 1 else "commands"
+        dur_str = f"{max(duration, 0.1):.1f}s"
+        if count > 0:
+            self.set_title(f"Worked for {dur_str} (Ran {count} {cmd_word})")
+        else:
+            self.set_title(f"Worked for {dur_str}")
+        self.set_collapsed(True)
+
+
+class TurnCardWidget(QtWidgets.QFrame):
+    """Encapsulates a single conversational exchange (User prompt -> Thoughts -> Work -> Response)."""
+
+    def __init__(self, prompt: str, selection_badge: Optional[str] = None, parent: Optional[QtWidgets.QWidget] = None):
+        super().__init__(parent)
+        self.setObjectName("TurnCard")
+        self.setStyleSheet(
+            "#TurnCard { background: transparent; border-bottom: 1px solid palette(mid); margin-bottom: 10px; }"
+        )
+        self._layout = QtWidgets.QVBoxLayout(self)
+        self._layout.setContentsMargins(2, 4, 2, 8)
+        self._layout.setSpacing(6)
+
+        # 1. User Message Box
+        self.user_box = QtWidgets.QFrame(self)
+        self.user_box.setObjectName("UserBox")
+        self.user_box.setStyleSheet(
+            "#UserBox { background: palette(midlight); border-radius: 6px; padding: 6px 10px; }"
+        )
+        user_layout = QtWidgets.QVBoxLayout(self.user_box)
+        user_layout.setContentsMargins(6, 6, 6, 6)
+        user_layout.setSpacing(2)
+
+        if selection_badge:
+            sel_lbl = QtWidgets.QLabel(f"🎯 {selection_badge}", self.user_box)
+            sel_lbl.setStyleSheet("font-size: 10px; color: #48dbfb; font-weight: 600;")
+            user_layout.addWidget(sel_lbl)
+
+        prompt_lbl = QtWidgets.QLabel(self.user_box)
+        prompt_lbl.setWordWrap(True)
+        prompt_lbl.setTextFormat(QtCore.Qt.RichText)
+        prompt_lbl.setText(f"<b>You:</b> {html.escape(prompt)}")
+        prompt_lbl.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
+        user_layout.addWidget(prompt_lbl)
+        self._layout.addWidget(self.user_box)
+
+        # 2. Sections (created on demand)
+        self.thought_section: Optional[ThoughtSection] = None
+        self.work_section: Optional[WorkSection] = None
+
+        # 3. Assistant Response Container
+        self.response_label = QtWidgets.QLabel(self)
+        self.response_label.setWordWrap(True)
+        self.response_label.setTextFormat(QtCore.Qt.MarkdownText)
+        self.response_label.setTextInteractionFlags(
+            QtCore.Qt.TextSelectableByMouse | QtCore.Qt.LinksAccessibleByMouse
+        )
+        self.response_label.setOpenExternalLinks(True)
+        self.response_label.setStyleSheet(
+            "QLabel { font-family: sans-serif; font-size: 12px; line-height: 1.4; padding: 4px; }"
+        )
+        self.response_label.setVisible(False)
+        self._layout.addWidget(self.response_label)
+
+        # 4. Turn Error Box
+        self.turn_error_box = QtWidgets.QFrame(self)
+        self.turn_error_box.setStyleSheet(
+            "background: rgba(231, 76, 60, 0.12); border: 1px solid #e74c3c; border-radius: 4px; padding: 4px;"
+        )
+        err_layout = QtWidgets.QHBoxLayout(self.turn_error_box)
+        err_layout.setContentsMargins(6, 4, 6, 4)
+        err_layout.setSpacing(6)
+        self.err_icon = QtWidgets.QLabel("⚠️")
+        err_layout.addWidget(self.err_icon)
+        self.err_label = QtWidgets.QLabel()
+        self.err_label.setWordWrap(True)
+        self.err_label.setStyleSheet("color: #e74c3c; font-size: 11px; font-weight: 500;")
+        err_layout.addWidget(self.err_label, stretch=1)
+        self.turn_error_box.setVisible(False)
+        self._layout.addWidget(self.turn_error_box)
+
+        self._assistant_raw_text = ""
+
+    def ensure_thought_section(self) -> ThoughtSection:
+        if self.thought_section is None:
+            self.thought_section = ThoughtSection(self)
+            idx = self._layout.indexOf(self.response_label)
+            self._layout.insertWidget(idx, self.thought_section)
+        return self.thought_section
+
+    def ensure_work_section(self) -> WorkSection:
+        if self.work_section is None:
+            self.work_section = WorkSection(self)
+            idx = self._layout.indexOf(self.response_label)
+            self._layout.insertWidget(idx, self.work_section)
+        return self.work_section
+
+    def append_response_token(self, token: str):
+        self._assistant_raw_text += token
+        self.response_label.setText(self._assistant_raw_text)
+        if not self.response_label.isVisible():
+            self.response_label.setVisible(True)
+
+    def finish_turn(self, final_text: str, metrics: Optional[dict] = None):
+        metrics = metrics or {}
+        if self.thought_section:
+            dur = metrics.get("thought_duration", 0.0)
+            self.thought_section.finish(dur)
+
+        if self.work_section:
+            dur = metrics.get("work_duration", 0.0)
+            cnt = metrics.get("tool_count", self.work_section._tool_count)
+            self.work_section.finish(dur, cnt)
+
+        if final_text:
+            self._assistant_raw_text = final_text
+            self.response_label.setText(self._assistant_raw_text)
+            self.response_label.setVisible(True)
+
+    def show_error(self, message: str):
+        self.err_label.setText(message)
+        self.turn_error_box.setVisible(True)
+
+
+class SystemMessageWidget(QtWidgets.QWidget):
+    """Muted inline banner for system actions (clear, undo, initial greetings)."""
+
+    def __init__(self, text: str, parent: Optional[QtWidgets.QWidget] = None):
+        super().__init__(parent)
+        layout = QtWidgets.QHBoxLayout(self)
+        layout.setContentsMargins(4, 2, 4, 2)
+        lbl = QtWidgets.QLabel(f"ℹ {text}", self)
+        lbl.setWordWrap(True)
+        lbl.setTextFormat(QtCore.Qt.RichText)
+        lbl.setStyleSheet("color: gray; font-size: 11px;")
+        layout.addWidget(lbl)
+
+
+class ChatStreamWidget(QtWidgets.QScrollArea):
+    """Scroll area containing sequential turn cards and system messages."""
+
+    def __init__(self, parent: Optional[QtWidgets.QWidget] = None):
+        super().__init__(parent)
+        self.setWidgetResizable(True)
+        self.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+        self.setStyleSheet("QScrollArea { border: none; background: transparent; }")
+
+        self.container = QtWidgets.QWidget()
+        self.container.setStyleSheet("QWidget { background: transparent; }")
+        self.layout = QtWidgets.QVBoxLayout(self.container)
+        self.layout.setContentsMargins(4, 4, 4, 4)
+        self.layout.setSpacing(6)
+        self.layout.addStretch(1)
+
+        self.setWidget(self.container)
+
+    def add_turn_card(self, card: TurnCardWidget):
+        self.layout.insertWidget(self.layout.count() - 1, card)
+        self.scroll_to_bottom()
+
+    def add_system_message(self, text: str):
+        msg = SystemMessageWidget(text, self.container)
+        self.layout.insertWidget(self.layout.count() - 1, msg)
+        self.scroll_to_bottom()
+
+    def scroll_to_bottom(self):
+        QtCore.QTimer.singleShot(10, self._do_scroll_bottom)
+
+    def _do_scroll_bottom(self):
+        vsb = self.verticalScrollBar()
+        vsb.setValue(vsb.maximum())
+
+    def clear(self):
+        while self.layout.count() > 1:
+            item = self.layout.takeAt(0)
+            widget = item.widget()
+            if widget:
+                widget.deleteLater()
+
+
+# ── AI Copilot Dock Widget ───────────────────────────────────────────
+
 class AICopilotDockWidget(QtWidgets.QDockWidget):
     """Native FreeCAD dock widget hosting the embedded AI Copilot assistant."""
 
     sig_models_discovered = QtCore.Signal(list)
+    _active_turn_card: Optional[Any] = None
+    chat_stream: Optional[Any] = None
 
     def __init__(self, parent=None):
         super().__init__("AI Copilot", parent)
@@ -166,6 +494,7 @@ class AICopilotDockWidget(QtWidgets.QDockWidget):
         self.tool_bridge = DirectToolBridge()
         self.worker = CopilotAgentWorker(self.tool_bridge, parent=self)
         self._current_assistant_buffer = ""
+        self._active_turn_card: Optional[TurnCardWidget] = None
         self._selection_observer = None
         self._last_submitted_prompt: Optional[str] = None
 
@@ -228,13 +557,9 @@ class AICopilotDockWidget(QtWidgets.QDockWidget):
         self.selection_label.setWordWrap(True)
         layout.addWidget(self.selection_label)
 
-        # ── Chat History Display ─────────────────────────────────────
-        self.chat_browser = QtWidgets.QTextBrowser()
-        self.chat_browser.setOpenExternalLinks(True)
-        self.chat_browser.setStyleSheet(
-            "QTextBrowser { font-family: sans-serif; font-size: 12px; line-height: 1.4; }"
-        )
-        layout.addWidget(self.chat_browser, stretch=1)
+        # ── Stream Viewport (Sequential Turn Cards) ──────────────────
+        self.chat_stream = ChatStreamWidget()
+        layout.addWidget(self.chat_stream, stretch=1)
 
         # ── Status Bar ───────────────────────────────────────────────
         self.status_label = QtWidgets.QLabel("Ready")
@@ -306,6 +631,8 @@ class AICopilotDockWidget(QtWidgets.QDockWidget):
 
     def _wire_signals(self):
         self.sig_models_discovered.connect(self._apply_model_list)
+        if hasattr(self.worker, "sig_thought"):
+            self.worker.sig_thought.connect(self._on_thought_received)
         self.worker.sig_token.connect(self._on_token_received)
         self.worker.sig_status.connect(self._on_status_changed)
         self.worker.sig_tool_started.connect(self._on_tool_started)
@@ -391,7 +718,8 @@ class AICopilotDockWidget(QtWidgets.QDockWidget):
         selection_summary = self._get_selection_summary()
         selection_ctx = f"[3D View Selection: {selection_summary}]" if selection_summary else None
 
-        self._append_user_message(prompt, selection_summary)
+        self._active_turn_card = TurnCardWidget(prompt, selection_summary)
+        self.chat_stream.add_turn_card(self._active_turn_card)
         self._current_assistant_buffer = ""
 
         # Open atomic undo transaction for this user turn
@@ -404,12 +732,18 @@ class AICopilotDockWidget(QtWidgets.QDockWidget):
         self.worker.stop()
         self.tool_bridge.abort_turn_transaction()
         self.status_label.setText("Stopping...")
+        if self._active_turn_card:
+            stop_msg = (self._current_assistant_buffer + "\n\n*(Operation stopped by user)*").strip()
+            self._active_turn_card.finish_turn(stop_msg, {})
+            self._active_turn_card = None
         self.btn_stop.setEnabled(False)
         self.btn_send.setEnabled(True)
 
     def _on_clear_clicked(self):
         self.worker.clear_history()
-        self.chat_browser.clear()
+        self.chat_stream.clear()
+        self._active_turn_card = None
+        self._current_assistant_buffer = ""
         self._append_system_message("Conversation history cleared.")
 
     def _on_undo_clicked(self):
@@ -470,7 +804,6 @@ class AICopilotDockWidget(QtWidgets.QDockWidget):
                     name = m.name or ""
                     if name.startswith("models/"):
                         name = name[len("models/"):]
-                    # Skip deprecated 2.5 and 1.x models for new users
                     if name.startswith("gemini-2.5-") or name.startswith("gemini-1.") or name.startswith("gemini-2.0"):
                         continue
                     actions = m.supported_actions or []
@@ -522,57 +855,70 @@ class AICopilotDockWidget(QtWidgets.QDockWidget):
 
     # ── Worker Signal Handlers ───────────────────────────────────────
 
+    def _on_thought_received(self, token: str):
+        if self._active_turn_card:
+            self._active_turn_card.ensure_thought_section().append_thought(token)
+
     def _on_token_received(self, token: str):
+        # Intercept operational HTML notices if delivered via token stream
+        if token.startswith("<div style="):
+            self._on_notice_received(token)
+            return
+
+        if self._active_turn_card:
+            # Auto-collapse work section when model begins streaming final response
+            if self._active_turn_card.work_section and not self._current_assistant_buffer:
+                self._active_turn_card.work_section.set_collapsed(True)
+            self._active_turn_card.append_response_token(token)
+
         self._current_assistant_buffer += token
-        # Live refresh of current assistant message
-        cursor = self.chat_browser.textCursor()
-        cursor.movePosition(QtGui.QTextCursor.End)
-        self.chat_browser.setTextCursor(cursor)
-        self.chat_browser.insertPlainText(token)
-        self.chat_browser.ensureCursorVisible()
+
+    def _on_notice_received(self, notice: str):
+        if self._active_turn_card:
+            self._active_turn_card.ensure_work_section().add_notice(notice)
 
     def _on_status_changed(self, status: str):
         self.status_label.setText(status)
 
     def _on_tool_started(self, tool_name: str, args: dict):
-        args_summary = ", ".join(f"{k}={v}" for k, v in list(args.items())[:3])
-        if len(args) > 3:
-            args_summary += ", ..."
-        chip = f"<div style='color: #4a90e2; font-family: monospace; font-size: 11px; margin: 4px 0;'>" \
-               f"⚡ <b>Executing:</b> {html.escape(tool_name)}({html.escape(args_summary)})</div>"
-        self._append_html(chip)
+        if self._active_turn_card:
+            if self._active_turn_card.thought_section:
+                self._active_turn_card.thought_section.set_collapsed(True)
+            self._active_turn_card.ensure_work_section().add_tool_call(tool_name, args)
 
     def _on_tool_finished(self, tool_name: str, result_str: str):
-        # Truncate output for chat preview
-        preview = result_str[:250] + ("..." if len(result_str) > 250 else "")
-        chip = f"<div style='color: #50b37b; font-family: monospace; font-size: 11px; margin: 2px 0 6px 12px;'>" \
-               f"✔ <b>Result:</b> {html.escape(preview)}</div>"
-        self._append_html(chip)
+        if self._active_turn_card:
+            self._active_turn_card.ensure_work_section().add_tool_result(tool_name, result_str)
 
-    def _on_turn_complete(self, full_response: str):
+    def _on_turn_complete(self, full_response: str, metrics: Optional[dict] = None):
         self._last_submitted_prompt = None
         self.btn_send.setEnabled(True)
         self.btn_stop.setEnabled(False)
         self.tool_bridge.commit_turn_transaction()
         if not self.error_frame.isVisible():
             self.status_label.setText("Ready")
+
+        if self._active_turn_card:
+            self._active_turn_card.finish_turn(full_response, metrics or {})
+            self._active_turn_card = None
+
         self._current_assistant_buffer = ""
-        self._append_html("<hr style='border: none; border-top: 1px solid palette(mid); margin: 8px 0;'>")
 
     def _on_error(self, error_msg: str):
         self.tool_bridge.abort_turn_transaction()
         cleaned_msg = format_user_friendly_error(error_msg)
         self.error_label.setText(cleaned_msg)
         self.error_frame.setVisible(True)
-        self._append_html(
-            f"<div style='color: #e74c3c; font-size: 11px; padding: 4px 0;'>"
-            f"⚠️ <b>Error:</b> {html.escape(cleaned_msg)}</div>"
-        )
+
+        if self._active_turn_card:
+            self._active_turn_card.show_error(cleaned_msg)
+            self._active_turn_card = None
+
         self.btn_send.setEnabled(True)
         self.btn_stop.setEnabled(False)
         self.status_label.setText("Error")
 
-        # Do not clear prompt on error: restore so user can easily retry or fix model
+        # Restore prompt on error so user can retry
         if self._last_submitted_prompt and not self.input_edit.toPlainText().strip():
             self.input_edit.blockSignals(True)
             try:
@@ -596,23 +942,12 @@ class AICopilotDockWidget(QtWidgets.QDockWidget):
     # ── Formatting Helpers ───────────────────────────────────────────
 
     def _append_user_message(self, text: str, selection_badge: Optional[str] = None):
-        badge_html = ""
-        if selection_badge:
-            badge_html = f"<div style='font-size: 10px; color: #8ec5fc; margin-bottom: 2px;'>" \
-                         f"🎯 {html.escape(selection_badge)}</div>"
-        content_html = f"<div style='background: palette(midlight); border-radius: 6px; padding: 6px 10px; margin: 6px 0;'>" \
-                       f"{badge_html}<b>You:</b> {html.escape(text)}</div>"
-        self._append_html(content_html)
+        card = TurnCardWidget(text, selection_badge)
+        self.chat_stream.add_turn_card(card)
+        self._active_turn_card = card
 
     def _append_system_message(self, msg_html: str):
-        formatted = f"<div style='color: gray; font-size: 11px; margin: 4px 0;'>ℹ {msg_html}</div>"
-        self._append_html(formatted)
+        self.chat_stream.add_system_message(msg_html)
 
     def _append_html(self, html_content: str):
-        cursor = self.chat_browser.textCursor()
-        cursor.movePosition(QtGui.QTextCursor.End)
-        self.chat_browser.setTextCursor(cursor)
-        self.chat_browser.insertHtml(html_content)
-        cursor.movePosition(QtGui.QTextCursor.End)
-        self.chat_browser.setTextCursor(cursor)
-        self.chat_browser.ensureCursorVisible()
+        self.chat_stream.add_system_message(html_content)

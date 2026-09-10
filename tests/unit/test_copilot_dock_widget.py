@@ -1,3 +1,19 @@
+import pytest
+
+@pytest.fixture(scope="session", autouse=True)
+def qapp():
+    try:
+        from PySide6 import QtWidgets
+    except ImportError:
+        from PySide import QtWidgets
+    if hasattr(QtWidgets, "QApplication"):
+        if QtWidgets.QApplication.instance() is None:
+            app = QtWidgets.QApplication(["pytest", "-platform", "offscreen"])
+            yield app
+        else:
+            yield QtWidgets.QApplication.instance()
+    else:
+        yield None
 """Unit tests for FreeCAD AI Copilot embedded in-process UI and tool bridge."""
 
 import json
@@ -193,7 +209,7 @@ def test_copilot_agent_worker_503_fallback(monkeypatch):
     tokens = []
     worker.sig_token.connect(tokens.append)
     complete = []
-    worker.sig_turn_complete.connect(complete.append)
+    worker.sig_turn_complete.connect(lambda res, *_: complete.append(res))
 
     worker._process_task({"prompt": "Hello test", "selection": None})
 
@@ -217,6 +233,7 @@ def test_dock_widget_error_handling_and_prompt_retention():
     mock_widget.btn_send = MagicMock()
     mock_widget.btn_stop = MagicMock()
     mock_widget._append_html = MagicMock()
+    mock_widget.chat_stream = MagicMock()
 
     AICopilotDockWidget._on_error(mock_widget, "503 UNAVAILABLE. {'error': {'message': 'High demand'}}")
 
@@ -354,6 +371,7 @@ def test_dock_widget_turn_transaction_lifecycle():
     mock_widget._get_selection_summary = MagicMock(return_value=None)
     mock_widget._append_user_message = MagicMock()
     mock_widget._append_html = MagicMock()
+    mock_widget.chat_stream = MagicMock()
 
     # 1. Send starts turn transaction
     AICopilotDockWidget._on_send_clicked(mock_widget)
@@ -455,7 +473,7 @@ def test_copilot_agent_worker_429_retry(monkeypatch):
     tokens = []
     worker.sig_token.connect(tokens.append)
     complete = []
-    worker.sig_turn_complete.connect(complete.append)
+    worker.sig_turn_complete.connect(lambda res, *_: complete.append(res))
 
     worker._process_task({"prompt": "Make pocket", "selection": None})
 
@@ -469,3 +487,113 @@ def test_copilot_agent_worker_429_retry(monkeypatch):
 
 
 
+
+
+def test_collapsible_section_toggle():
+    from AICopilot.ui.dock_widget import CollapsibleSection
+
+    sec = CollapsibleSection("Test Section")
+    sec.show()
+    assert sec._is_expanded is True
+    assert "▼" in sec.toggle_btn.text()
+    assert sec.content_frame.isVisible() is True
+
+    # Collapse
+    sec.set_collapsed(True)
+    assert sec._is_expanded is False
+    assert "▶" in sec.toggle_btn.text()
+    assert sec.content_frame.isVisible() is False
+
+    # Expand
+    sec.set_collapsed(False)
+    assert sec._is_expanded is True
+    assert "▼" in sec.toggle_btn.text()
+    assert sec.content_frame.isVisible() is True
+
+
+def test_thought_section_lifecycle():
+    from AICopilot.ui.dock_widget import ThoughtSection
+
+    ts = ThoughtSection()
+    assert "Thinking..." in ts.toggle_btn.text()
+    assert ts._is_expanded is True
+
+    ts.append_thought("Analyzing requirements...")
+    assert "Analyzing requirements..." in ts.thought_edit.toPlainText()
+
+    ts.finish(duration=1.4)
+    assert "Thought (1.4s)" in ts.toggle_btn.text()
+    assert ts._is_expanded is False
+    assert ts.content_frame.isVisible() is False
+
+
+def test_work_section_lifecycle():
+    from AICopilot.ui.dock_widget import WorkSection
+
+    ws = WorkSection()
+    assert "Working..." in ws.toggle_btn.text()
+    assert ws._is_expanded is True
+
+    ws.add_tool_call("spatial_query", {"object_name": "Body", "query_type": "top_face"})
+    assert ws._tool_count == 1
+    assert "Working (1 command)..." in ws.toggle_btn.text()
+
+    ws.add_tool_result("spatial_query", '{"top_face": "Face6"}')
+
+    ws.add_notice("Model busy notice")
+
+    ws.finish(duration=3.8, count=1)
+    assert "Worked for 3.8s (Ran 1 command)" in ws.toggle_btn.text()
+    assert ws._is_expanded is False
+    assert ws.content_frame.isVisible() is False
+
+
+def test_turn_card_widget_flow():
+    from AICopilot.ui.dock_widget import TurnCardWidget
+
+    card = TurnCardWidget("Create a 20mm pocket", "Body (Face6)")
+    card.show()
+    assert card.thought_section is None
+    assert card.work_section is None
+
+    # Lazy thought creation
+    t = card.ensure_thought_section()
+    assert card.thought_section is t
+    t.append_thought("Thinking step")
+
+    # Lazy work creation
+    w = card.ensure_work_section()
+    assert card.work_section is w
+    w.add_tool_call("partdesign_operations", {"operation": "pocket", "depth": 20})
+
+    # Assistant response streaming
+    card.append_response_token("Pocket created ")
+    card.append_response_token("successfully.")
+    assert card.response_label.isVisible() is True
+
+    # Finish turn
+    card.finish_turn(
+        "Pocket created successfully.",
+        {"thought_duration": 1.2, "work_duration": 2.5, "tool_count": 1},
+    )
+    assert t._is_expanded is False
+    assert w._is_expanded is False
+    assert "Thought (1.2s)" in t.toggle_btn.text()
+    assert "Worked for 2.5s (Ran 1 command)" in w.toggle_btn.text()
+
+
+def test_chat_stream_widget():
+    from AICopilot.ui.dock_widget import ChatStreamWidget, TurnCardWidget
+
+    stream = ChatStreamWidget()
+    assert stream.layout.count() == 1  # stretch item
+
+    card = TurnCardWidget("Hello")
+    stream.add_turn_card(card)
+    assert stream.layout.count() == 2
+
+    stream.add_system_message("History cleared")
+    assert stream.layout.count() == 3
+
+    stream.clear()
+    assert stream.layout.count() == 1  # only stretch remains

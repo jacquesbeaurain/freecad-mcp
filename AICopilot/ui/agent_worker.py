@@ -68,11 +68,12 @@ class CopilotAgentWorker(QtCore.QThread):
     """Background QThread that drives Gemini conversational turns and function calling."""
 
     # Qt Signals for GUI updates
+    sig_thought = QtCore.Signal(str)
     sig_token = QtCore.Signal(str)
     sig_status = QtCore.Signal(str)
     sig_tool_started = QtCore.Signal(str, dict)
     sig_tool_finished = QtCore.Signal(str, str)
-    sig_turn_complete = QtCore.Signal(str)
+    sig_turn_complete = QtCore.Signal(str, dict)
     sig_error = QtCore.Signal(str)
     sig_request_main_thread_tool = QtCore.Signal(object)
 
@@ -198,10 +199,18 @@ class CopilotAgentWorker(QtCore.QThread):
                 )
             ]
 
+            thinking_cfg = None
+            if hasattr(types, 'ThinkingConfig'):
+                try:
+                    thinking_cfg = types.ThinkingConfig(include_thoughts=True)
+                except Exception:
+                    pass
+
             config = types.GenerateContentConfig(
                 system_instruction=SYSTEM_INSTRUCTION,
                 temperature=0.2,
                 tools=gemini_tools,
+                thinking_config=thinking_cfg,
             )
 
             history_start_len = len(self.history)
@@ -216,7 +225,11 @@ class CopilotAgentWorker(QtCore.QThread):
 
             # Function calling loop
             turn_done = False
+            turn_start_time = time.time()
+            work_duration = 0.0
+            tool_count = 0
             accumulated_response = ""
+            accumulated_thought = ""
             max_turns = 10  # Guard against infinite tool recursion
             active_model = self.model_name
 
@@ -299,18 +312,25 @@ class CopilotAgentWorker(QtCore.QThread):
                 model_content = candidate.content
                 self.history.append(model_content)
 
-                # Check for function calls
+                # Check for function calls and thoughts
                 function_calls = []
                 for part in model_content.parts:
-                    if part.text:
+                    is_thought = getattr(part, 'thought', False) is True
+                    if is_thought and part.text:
+                        self.sig_thought.emit(part.text)
+                        accumulated_thought += part.text
+                    elif part.text:
                         self.sig_token.emit(part.text)
                         accumulated_response += part.text
+
                     if part.function_call:
                         function_calls.append(part.function_call)
 
                 if function_calls:
+                    t_work_start = time.time()
                     response_parts = []
                     for call in function_calls:
+                        tool_count += 1
                         fn_name = call.name
                         fn_args = dict(call.args) if call.args else {}
 
@@ -351,13 +371,21 @@ class CopilotAgentWorker(QtCore.QThread):
                             parts=response_parts,
                         )
                     )
+                    work_duration += (time.time() - t_work_start)
                     self.sig_status.emit("Evaluating result...")
                 else:
                     # Model produced a final textual response without further tool calls
                     turn_done = True
 
+            total_duration = time.time() - turn_start_time
+            metrics = {
+                "total_duration": total_duration,
+                "work_duration": work_duration if work_duration > 0 else (total_duration if tool_count > 0 else 0.0),
+                "thought_duration": max(0.0, total_duration - work_duration) if accumulated_thought else 0.0,
+                "tool_count": tool_count,
+            }
             self.sig_status.emit("Idle")
-            self.sig_turn_complete.emit(accumulated_response)
+            self.sig_turn_complete.emit(accumulated_response, metrics)
 
         except Exception as exc:
             logger.exception(f"Error in Gemini agent turn: {exc}")
