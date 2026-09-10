@@ -27,6 +27,17 @@ When selecting geometry in the 3D viewport, the selection badge reactively updat
 ### Live Ready State with Fixed Error Parsing and Spatial Queries
 ![Live Copilot Ready State](img/copilot_fixed_gui.png)
 
+### Antigravity-Style Collapsible Thoughts, Work Sections, and Markdown Summaries
+The conversation history renders sequential turns with collapsible thought and work sections that automatically collapse upon completion:
+
+| Collapsed State (Default at End of Turn) | Expanded State (Click Header to Inspect) |
+|---|---|
+| ![Collapsed State](img/copilot_ui_mockup.png) | ![Expanded State](img/copilot_ui_mockup_top.png) |
+
+### Live Operational Notices in Stream View
+During multi-step execution, model busy (503) and rate limit (429) quota pauses display directly in the active turn card:
+![Live Operational Notices](img/copilot_dock_live_stream.png)
+
 ---
 
 ## 3. Git Commit History in `freecad-mcp`
@@ -50,6 +61,7 @@ The implementation was delivered across clean, well-documented commits following
 | [`61cfddb`](../../../commit/61cfddb) | `feat(copilotui): add atomic turn undo transactions and 429 auto-retry backoff` | [`../AICopilot/ui/agent_worker.py`](../AICopilot/ui/agent_worker.py), [`../AICopilot/ui/dock_widget.py`](../AICopilot/ui/dock_widget.py), [`../AICopilot/ui/tool_bridge.py`](../AICopilot/ui/tool_bridge.py), [`../tests/unit/test_copilot_dock_widget.py`](../tests/unit/test_copilot_dock_widget.py) |
 | [`6884882`](../../../commit/6884882) | `feat(copilotui): document atomic turn undo and 429 quota handling in user guide` | [`EMBEDDED_AI_COPILOT_GUIDE.md`](EMBEDDED_AI_COPILOT_GUIDE.md) |
 | [`28de92e`](../../../commit/28de92e) | `feat(copilotui): add embedded copilot walkthrough and visual verification to docs` | [`EMBEDDED_AI_COPILOT_WALKTHROUGH.md`](EMBEDDED_AI_COPILOT_WALKTHROUGH.md) |
+| [`177d534`](../../../commit/177d534) | `feat(copilotui): add collapsible thought and work sections with markdown summaries` | [`../AICopilot/ui/agent_worker.py`](../AICopilot/ui/agent_worker.py), [`../AICopilot/ui/dock_widget.py`](../AICopilot/ui/dock_widget.py), [`../tests/unit/test_copilot_dock_widget.py`](../tests/unit/test_copilot_dock_widget.py) |
 
 ---
 
@@ -82,7 +94,7 @@ The implementation was delivered across clean, well-documented commits following
 
 ## 5. Automated Verification Results
 
-All 16 Copilot UI unit tests and 101 related CAD tests pass consistently:
+All 21 Copilot UI unit tests and 106 related CAD tests pass consistently:
 ```pwsh
 D:\repos\oth\FreeCAD\build\release\bin\python.exe -m pytest tests/unit/test_copilot_dock_widget.py tests/unit/test_spatial_ops.py tests/unit/test_sketch_ops.py
 ```
@@ -93,14 +105,14 @@ platform win32 -- Python 3.14.7, pytest-9.1.1, pluggy-1.6.0
 rootdir: D:\repos\oth\FreeCADOther\freecad-mcp
 configfile: pyproject.toml
 plugins: anyio-4.14.2, mock-3.15.1
-collected 98 items
+collected 106 items
 
-tests\unit\test_copilot_dock_widget.py ................                 [ 16%]
+tests\unit\test_copilot_dock_widget.py .....................            [ 20%]
 tests\unit\test_spatial_ops.py ......................................... [ 58%]
 .........                                                                [ 67%]
 tests\unit\test_sketch_ops.py ...................................        [100%]
 
-============================= 101 passed in 0.82s ==============================
+============================= 106 passed in 0.88s ==============================
 ```
 
 ---
@@ -141,3 +153,30 @@ Because FreeCAD transactions were historically committed per individual tool cal
 - **Free Tier**: 15–20 RPM cap per model across the Google Cloud project.
 - **Pay-As-You-Go**: Enabling billing in Google AI Studio or Google Cloud Console raises the quota for Gemini 3.6/3.7/3.8 Flash to **1,000–2,000 RPM**, completely eliminating 429 rate limit bottlenecks during interactive CAD sessions. Pricing on Flash models is approximately $0.10 per million tokens (a fraction of a cent per operation).
 
+
+
+---
+
+## 7. Antigravity-Style Conversation Stream UI
+
+To provide a modern, clean developer experience matching advanced AI coding environments like Antigravity, the chat history interface was upgraded from a flat `QTextBrowser` to a structured, widget-based stream (`ChatStreamWidget` + `TurnCardWidget`):
+
+### Key UI Capabilities
+1. **Collapsible Thought Traces (`ThoughtSection`)**:
+   - As thinking tokens stream from Gemini (`types.ThinkingConfig(include_thoughts=True)`), an expanded `▼ Thinking...` section displays the model's live reasoning in a dark monospaced code frame.
+   - Upon completion, the section automatically collapses into a compact pill: `▶ Thought (1.4s)`.
+   - The user can click the header at any time to expand or re-collapse the reasoning trace.
+
+2. **Active Work Sections (`WorkSection`)**:
+   - While tool calls are executing against FreeCAD in real time, the work section displays `▼ Working (n commands)...` with live execution logs (`⚡ Executing: tool(args...)` and `✔ Result: <preview>`).
+   - Operational notices such as 503 model fallback and 429 quota backoff cooldowns render inline within the active work section rather than cluttering the final assistant response.
+   - Upon completion, the work section automatically collapses into: `▶ Worked for 3.8s (Ran 2 commands)`.
+   - Clicking the pill reveals the exact commands that ran and their return values.
+
+3. **Formatted Markdown Summaries**:
+   - The assistant's final response renders using Qt CommonMark Markdown (`QLabel` with `setTextFormat(QtCore.Qt.MarkdownText)`, `setWordWrap(True)`, and mouse selection enabled).
+   - Supports headings, bold/italic text, lists, inline code chips (`Face6`), and pre-formatted code blocks without nested scrollbars.
+
+4. **Self-Contained Turn Cards (`TurnCardWidget`)**:
+   - Each conversational exchange is grouped into an independent turn card holding the user's prompt, selection badge, thought trace, work section, and response summary.
+   - If an error occurs, a dedicated red error box renders directly within the turn card while preserving the prompt in the input edit for instant retry.
