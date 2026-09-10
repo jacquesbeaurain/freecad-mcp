@@ -76,12 +76,18 @@ class PrimitivesHandler(BaseHandler):
     def create_box(self, args: Dict[str, Any]) -> str:
         """Create a box with specified dimensions."""
         try:
-            err = _check_unknown_keys('box', args, frozenset({'length', 'width', 'height', 'x', 'y', 'z', 'name'}))
+            err = _check_unknown_keys('box', args, frozenset({'length', 'width', 'height', 'x', 'y', 'z', 'name', 'size'}))
             if err:
                 return err
-            length = args.get('length', 10)
-            width = args.get('width', 10)
-            height = args.get('height', 10)
+            size = args.get('size')
+            if size is not None:
+                length = args.get('length', size)
+                width = args.get('width', size)
+                height = args.get('height', size)
+            else:
+                length = args.get('length', 10)
+                width = args.get('width', length if 'length' in args else 10)
+                height = args.get('height', length if 'length' in args else 10)
             x = args.get('x', 0)
             y = args.get('y', 0)
             z = args.get('z', 0)

@@ -36,6 +36,8 @@ GUIDELINES:
 2. 3D Selection Context: The user may select faces, edges, vertices, or bodies in FreeCAD's 3D viewport. When a selection context is provided (e.g. [Selected: Box.Face1]), use that exact geometry for pads, pockets, fillets, chamfers, or toolpath boundaries.
 3. Clean Document Trees: Avoid creating orphaned features. For PartDesign features (pads, pockets, holes), ensure they reside inside the appropriate PartDesign::Body.
 4. Tool Calling: You have access to native FreeCAD tools (partdesign_operations, sketch_operations, cam_operations, cam_tools, spreadsheet_operations, part_operations, measurement_operations, spatial_query, and execute_python). Invoke these tools to inspect and modify the model directly.
+   - For PartDesign primitives: Use `partdesign_operations(operation="additive_box", length=100, width=100, height=100)` or `additive_cylinder`, `additive_sphere`.
+   - For Part CSG primitives: Use `part_operations(operation="create_box", length=100, width=100, height=100)` or `create_cylinder`, `create_sphere`.
 5. Python Scripting Rules (execute_python):
    - Built-in CAD Helpers: execute_python includes pre-loaded namespace helpers for clean 1-step geometry:
      • `create_box(length, width=None, height=None, body=None, name="Box")`: Creates a valid solid box/cube inside a PartDesign Body if present, or a Part::Box.

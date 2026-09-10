@@ -2058,3 +2058,131 @@ class PartDesignOpsHandler(BaseHandler):
 
         except Exception as e:
             return f"Error creating datum from face: {e}"
+
+    def create_body(self, args: Dict[str, Any]) -> str:
+        """Create a new PartDesign Body in the active document."""
+        try:
+            name = args.get('name') or args.get('body_name') or 'Body'
+            doc = self.get_document()
+            if not doc:
+                return "No active document"
+
+            body = doc.addObject("PartDesign::Body", name)
+            if hasattr(body, "Label") and name:
+                body.Label = name
+            self.recompute(doc)
+            return f"Created PartDesign Body: {body.Name}"
+        except Exception as e:
+            return f"Error creating PartDesign Body: {e}"
+
+    def _resolve_target_body(self, args: Dict[str, Any], doc: FreeCAD.Document):
+        """Helper to get specified body or create one if needed."""
+        body_name = args.get('body_name') or args.get('body')
+        if body_name:
+            body = self.get_object(body_name, doc)
+            if not body or body.TypeId != "PartDesign::Body":
+                raise ValueError(f"Body not found or not a PartDesign::Body: {body_name}")
+            return body
+        return self.create_body_if_needed(doc)
+
+    def additive_box(self, args: Dict[str, Any]) -> str:
+        """Create a PartDesign::AdditiveBox primitive inside a Body."""
+        try:
+            doc = self.get_document()
+            if not doc:
+                return "No active document"
+
+            body = self._resolve_target_body(args, doc)
+            if not body:
+                return "Failed to find or create a PartDesign Body"
+
+            size = args.get('size')
+            if size is not None:
+                length = float(size)
+                width = float(args.get('width', size))
+                height = float(args.get('height', size))
+            else:
+                length = float(args.get('length', 10))
+                width = float(args.get('width', length if 'length' in args else 10))
+                height = float(args.get('height', length if 'length' in args else 10))
+
+            if length <= 0 or width <= 0 or height <= 0:
+                return f"Error: Box dimensions must be > 0 (got length={length}, width={width}, height={height})"
+
+            name = args.get('name', 'Box')
+            box = body.newObject("PartDesign::AdditiveBox", name)
+            box.Length = length
+            box.Width = width
+            box.Height = height
+
+            self.recompute(doc)
+
+            err = self._check_feature_state(box, "AdditiveBox")
+            if err:
+                return err
+
+            return f"Created AdditiveBox: {box.Name} ({length:.2f}x{width:.2f}x{height:.2f}mm) in Body: {body.Name}"
+        except Exception as e:
+            return f"Error creating AdditiveBox: {e}"
+
+    def additive_cylinder(self, args: Dict[str, Any]) -> str:
+        """Create a PartDesign::AdditiveCylinder primitive inside a Body."""
+        try:
+            doc = self.get_document()
+            if not doc:
+                return "No active document"
+
+            body = self._resolve_target_body(args, doc)
+            if not body:
+                return "Failed to find or create a PartDesign Body"
+
+            radius = float(args.get('radius', 5))
+            height = float(args.get('height', args.get('length', 10)))
+
+            if radius <= 0 or height <= 0:
+                return f"Error: Cylinder radius and height must be > 0 (got radius={radius}, height={height})"
+
+            name = args.get('name', 'Cylinder')
+            cyl = body.newObject("PartDesign::AdditiveCylinder", name)
+            cyl.Radius = radius
+            cyl.Height = height
+
+            self.recompute(doc)
+
+            err = self._check_feature_state(cyl, "AdditiveCylinder")
+            if err:
+                return err
+
+            return f"Created AdditiveCylinder: {cyl.Name} (radius={radius:.2f}mm, height={height:.2f}mm) in Body: {body.Name}"
+        except Exception as e:
+            return f"Error creating AdditiveCylinder: {e}"
+
+    def additive_sphere(self, args: Dict[str, Any]) -> str:
+        """Create a PartDesign::AdditiveSphere primitive inside a Body."""
+        try:
+            doc = self.get_document()
+            if not doc:
+                return "No active document"
+
+            body = self._resolve_target_body(args, doc)
+            if not body:
+                return "Failed to find or create a PartDesign Body"
+
+            radius = float(args.get('radius', 5))
+            if radius <= 0:
+                return f"Error: Sphere radius must be > 0 (got radius={radius})"
+
+            name = args.get('name', 'Sphere')
+            sph = body.newObject("PartDesign::AdditiveSphere", name)
+            sph.Radius = radius
+
+            self.recompute(doc)
+
+            err = self._check_feature_state(sph, "AdditiveSphere")
+            if err:
+                return err
+
+            return f"Created AdditiveSphere: {sph.Name} (radius={radius:.2f}mm) in Body: {body.Name}"
+        except Exception as e:
+            return f"Error creating AdditiveSphere: {e}"
+

@@ -200,6 +200,15 @@ class DirectToolBridge:
             if tool_name == "partdesign_operations":
                 mapping = {
                     "create_body": getattr(server.partdesign_ops, "create_body", None),
+                    "additive_box": getattr(server.partdesign_ops, "additive_box", None),
+                    "box": getattr(server.partdesign_ops, "additive_box", None),
+                    "create_box": getattr(server.partdesign_ops, "additive_box", None),
+                    "additive_cylinder": getattr(server.partdesign_ops, "additive_cylinder", None),
+                    "cylinder": getattr(server.partdesign_ops, "additive_cylinder", None),
+                    "create_cylinder": getattr(server.partdesign_ops, "additive_cylinder", None),
+                    "additive_sphere": getattr(server.partdesign_ops, "additive_sphere", None),
+                    "sphere": getattr(server.partdesign_ops, "additive_sphere", None),
+                    "create_sphere": getattr(server.partdesign_ops, "additive_sphere", None),
                     "pad": getattr(server.partdesign_ops, "pad_sketch", None),
                     "revolution": getattr(server.partdesign_ops, "revolution", None),
                     "loft": getattr(server.partdesign_ops, "loft_profiles", None),
@@ -337,19 +346,23 @@ class DirectToolBridge:
         return [
             {
                 "name": "partdesign_operations",
-                "description": "Create and edit PartDesign features: create_body, pad, pocket, hole, fillet, chamfer, revolution, groove, mirror, linear_pattern, polar_pattern.",
+                "description": "Create and edit PartDesign features: create_body, additive_box, additive_cylinder, additive_sphere, pad, pocket, hole, fillet, chamfer, revolution, groove, mirror, linear_pattern, polar_pattern.",
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "operation": {
                             "type": "string",
-                            "enum": ["create_body", "pad", "pocket", "hole", "fillet", "chamfer", "revolution", "groove", "mirror", "linear_pattern", "polar_pattern"],
+                            "enum": ["create_body", "additive_box", "additive_cylinder", "additive_sphere", "pad", "pocket", "hole", "fillet", "chamfer", "revolution", "groove", "mirror", "linear_pattern", "polar_pattern"],
                             "description": "PartDesign operation to perform"
                         },
                         "body_name": {"type": "string", "description": "Target PartDesign::Body object name"},
+                        "name": {"type": "string", "description": "Name for the feature or body"},
                         "sketch_name": {"type": "string", "description": "Sketch to use for pad/pocket/revolution"},
-                        "length": {"type": "number", "description": "Length / depth in mm for pad or pocket"},
-                        "radius": {"type": "number", "description": "Radius for fillet or hole"},
+                        "length": {"type": "number", "description": "Length (X) in mm for box, or extrusion length / depth for pad/pocket"},
+                        "width": {"type": "number", "description": "Width (Y) in mm for box"},
+                        "height": {"type": "number", "description": "Height (Z) in mm for box or cylinder"},
+                        "radius": {"type": "number", "description": "Radius for cylinder, sphere, fillet or hole"},
+                        "size": {"type": "number", "description": "Uniform size for cube (sets length, width, and height)"},
                         "angle": {"type": "number", "description": "Angle in degrees for revolution/groove"},
                         "reversed": {"type": "boolean", "description": "Reverse direction flag"},
                         "sub_elements": {"type": "array", "items": {"type": "string"}, "description": "Faces/edges for fillet/chamfer (e.g. ['Edge1', 'Face2'])"}

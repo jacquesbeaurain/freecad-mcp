@@ -732,3 +732,128 @@ def test_direct_tool_bridge_part_operations_create_box(mock_freecad):
     res = bridge.execute_tool("part_operations", {"operation": "create_box", "length": 100, "width": 100, "height": 100})
     fake_server.primitives.create_box.assert_called_once_with({"operation": "create_box", "length": 100, "width": 100, "height": 100})
     assert "Created box" in res
+
+
+def test_partdesign_create_body(mock_freecad):
+    import AICopilot.handlers.base as b
+    from AICopilot.handlers.partdesign_ops import PartDesignOpsHandler
+
+    doc = MagicMock()
+    body = MagicMock()
+    body.Name = "Body"
+    doc.addObject.return_value = body
+    b.FreeCAD.ActiveDocument = doc
+    mock_freecad.ActiveDocument = doc
+
+    handler = PartDesignOpsHandler()
+    res = handler.create_body({"name": "CustomBody"})
+    assert "Created PartDesign Body: Body" in res
+    doc.addObject.assert_called_once_with("PartDesign::Body", "CustomBody")
+
+
+def test_partdesign_additive_box(mock_freecad):
+    import AICopilot.handlers.base as b
+    from AICopilot.handlers.partdesign_ops import PartDesignOpsHandler
+
+    doc = MagicMock()
+    body = MagicMock()
+    body.Name = "Body"
+    body.TypeId = "PartDesign::Body"
+    doc.Objects = [body]
+    box = MagicMock()
+    box.Name = "Box"
+    box.State = []
+    body.newObject.return_value = box
+    b.FreeCAD.ActiveDocument = doc
+    mock_freecad.ActiveDocument = doc
+
+    handler = PartDesignOpsHandler()
+    res = handler.additive_box({"length": 100})
+    assert "Created AdditiveBox: Box (100.00x100.00x100.00mm)" in res
+    assert box.Length == 100.0
+    assert box.Width == 100.0
+    assert box.Height == 100.0
+
+
+def test_partdesign_additive_cylinder(mock_freecad):
+    import AICopilot.handlers.base as b
+    from AICopilot.handlers.partdesign_ops import PartDesignOpsHandler
+
+    doc = MagicMock()
+    body = MagicMock()
+    body.Name = "Body"
+    body.TypeId = "PartDesign::Body"
+    doc.Objects = [body]
+    cyl = MagicMock()
+    cyl.Name = "Cylinder"
+    cyl.State = []
+    body.newObject.return_value = cyl
+    b.FreeCAD.ActiveDocument = doc
+    mock_freecad.ActiveDocument = doc
+
+    handler = PartDesignOpsHandler()
+    res = handler.additive_cylinder({"radius": 20, "height": 40})
+    assert "Created AdditiveCylinder: Cylinder" in res
+    assert cyl.Radius == 20.0
+    assert cyl.Height == 40.0
+
+
+def test_partdesign_additive_sphere(mock_freecad):
+    import AICopilot.handlers.base as b
+    from AICopilot.handlers.partdesign_ops import PartDesignOpsHandler
+
+    doc = MagicMock()
+    body = MagicMock()
+    body.Name = "Body"
+    body.TypeId = "PartDesign::Body"
+    doc.Objects = [body]
+    sph = MagicMock()
+    sph.Name = "Sphere"
+    sph.State = []
+    body.newObject.return_value = sph
+    b.FreeCAD.ActiveDocument = doc
+    mock_freecad.ActiveDocument = doc
+
+    handler = PartDesignOpsHandler()
+    res = handler.additive_sphere({"radius": 15})
+    assert "Created AdditiveSphere: Sphere" in res
+    assert sph.Radius == 15.0
+
+
+def test_direct_tool_bridge_partdesign_additive_box(mock_freecad):
+    import AICopilot.ui.tool_bridge as tb
+
+    doc = MagicMock()
+    mock_freecad.ActiveDocument = doc
+    tb.FreeCAD.ActiveDocument = doc
+
+    fake_server = MagicMock()
+    fake_server.partdesign_ops.additive_box.return_value = "Created AdditiveBox: Box (100x100x100mm) in Body: Body"
+
+    bridge = tb.DirectToolBridge(server=fake_server)
+    res = bridge.execute_tool("partdesign_operations", {"operation": "additive_box", "length": 100})
+    fake_server.partdesign_ops.additive_box.assert_called_once_with({"operation": "additive_box", "length": 100})
+    assert "Created AdditiveBox" in res
+
+
+def test_primitives_create_box_defaults(mock_freecad):
+    import AICopilot.handlers.base as b
+    import AICopilot.handlers.primitives as prim
+    from AICopilot.handlers.primitives import PrimitivesHandler
+
+    doc = MagicMock()
+    box = MagicMock()
+    box.Name = "Box"
+    doc.addObject.return_value = box
+    b.FreeCAD.ActiveDocument = doc
+    mock_freecad.ActiveDocument = doc
+    mock_freecad.Vector = MagicMock()
+    prim.FreeCAD.Vector = MagicMock()
+
+    handler = PrimitivesHandler()
+    res = handler.create_box({"length": 100})
+    assert "Created box: Box" in res
+    assert box.Length == 100
+    assert box.Width == 100
+    assert box.Height == 100
+
