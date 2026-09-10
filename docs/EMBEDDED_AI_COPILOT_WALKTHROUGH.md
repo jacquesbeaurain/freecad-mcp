@@ -254,3 +254,36 @@ After executing code in `execute_python_ops.py`:
 The Copilot's `SYSTEM_INSTRUCTION` was updated with explicit rules:
 - Prefer 1-step solids (`body.newObject("PartDesign::AdditiveBox", "Box")` or `create_box()`).
 - Explicitly forbids applying axis symmetry across the same axis on horizontal or vertical lines.
+
+
+---
+
+## 10. Direct Tool Bridge Operations & Measurement Handling
+
+### 1. Root Cause of Measurement & Creation Errors
+During manual testing of "Make a 100mm cube", Gemini attempted post-creation verification using the `measurement_operations` tool and primitive creation via `part_operations`:
+1. **Unknown Operation Error**:
+   - `tool_bridge.py` declared `"enum": ["bounding_box", "volume", ...]` to Gemini.
+   - However, `MeasurementOpsHandler` implemented `get_bounding_box`, `get_volume`, `get_surface_area` and registered only those in `_ALLOWED_OPERATIONS`.
+   - In `DirectToolBridge._dispatch_direct`, it evaluated `getattr(server.measurement_ops, op, None)` with `op="bounding_box"`, which returned `None`, triggering `ValueError: Unknown Measurement operation: bounding_box`.
+2. **`create_box` vs `box` Mismatch**:
+   - Gemini invoked `part_operations` with `operation="create_box"`.
+   - `PrimitivesHandler` implements `box()`, causing dispatch failures when using the prefixed name.
+
+### 2. Implementation Details
+1. **Measurement Operations Harmonization (`AICopilot/handlers/measurement_ops.py`)**:
+   - Added canonical operations (`bounding_box`, `volume`, `surface_area`, `mass_properties`, `center_of_mass`) to `_ALLOWED_OPERATIONS`.
+   - Added aliases: `bounding_box = get_bounding_box`, `volume = get_volume`, `surface_area = get_surface_area`.
+   - Added robust target object resolution: automatically accepts `object_name`, `name`, `target`, or `obj`, and verifies that PartDesign Bodies and Part primitives have valid shapes before bounding box calculations.
+2. **Tool Bridge Normalization (`AICopilot/ui/tool_bridge.py`)**:
+   - In `part_operations` dispatch: dynamically strips `create_` prefixes (mapping `create_box` -> `box`, `create_cylinder` -> `cylinder`, `create_sphere` -> `sphere`).
+   - In `measurement_operations` dispatch: maps `bounding_box` -> `get_bounding_box`, `volume` -> `get_volume`, `surface_area` -> `get_surface_area`.
+   - Aligned Gemini tool declarations schema with valid operations.
+3. **Automated Unit Verification (`tests/unit/test_copilot_dock_widget.py`)**:
+   - Added unit tests: `test_direct_tool_bridge_measurement_bounding_box` and `test_direct_tool_bridge_part_operations_create_box`.
+   - All 31 unit tests pass.
+
+### 3. Verification & Live Inspection
+Verified live in FreeCAD on both Part primitives and PartDesign Bodies:
+- Direct tool bridge execution of `measurement_operations` with `operation="bounding_box"` accurately reports bounding box coordinates:
+  `Bounding box for Body: X: 0.00 to 100.00 mm (length: 100.00), Y: 0.00 to 100.00 mm (length: 100.00), Z: 0.00 to 100.00 mm (length: 100.00)`.
