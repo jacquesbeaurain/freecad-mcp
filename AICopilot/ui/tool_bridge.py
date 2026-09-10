@@ -280,7 +280,15 @@ class DirectToolBridge:
 
             elif tool_name in ("cam_operations", "cam_tools", "cam_tool_controllers"):
                 handler = server.cam_ops if tool_name == "cam_operations" else getattr(server, tool_name)
-                fn = getattr(handler, op, None)
+                cam_op_map = {
+                    "pocket_shape": "pocket",
+                    "mill_face": "face",
+                    "drill": "drilling",
+                    "surface_milling": "surface",
+                    "post_process": "export_gcode",
+                }
+                mapped_op = cam_op_map.get(op, op) if tool_name == "cam_operations" else op
+                fn = getattr(handler, mapped_op, None)
                 if not fn:
                     raise ValueError(f"Unknown {tool_name} operation: {op}")
                 res = fn(args)
@@ -394,19 +402,22 @@ class DirectToolBridge:
             },
             {
                 "name": "cam_operations",
-                "description": "Manage CAM (Path) jobs and operations: create_job, profile, pocket_shape, mill_face, adaptive, drill, helix, export_gcode, repair_cam_tree.",
+                "description": "Manage CAM (Path) jobs and CNC machining operations: create_job, profile, pocket, surface, adaptive, drilling, face, helix, export_gcode, inspect_job.",
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "operation": {
                             "type": "string",
-                            "enum": ["create_job", "profile", "pocket_shape", "mill_face", "adaptive", "drill", "helix", "export_gcode", "repair_cam_tree", "inspect_job"],
+                            "enum": ["create_job", "profile", "pocket", "pocket_shape", "surface", "surface_milling", "adaptive", "drilling", "drill", "face", "mill_face", "helix", "export_gcode", "inspect_job"],
                             "description": "CAM operation to perform"
                         },
                         "job_name": {"type": "string", "description": "Name of CAM Job (defaults to 'Job')"},
-                        "model_name": {"type": "string", "description": "Base solid/model to machine"},
+                        "base_object": {"type": "string", "description": "Base solid/model to machine (e.g. 'Wood', 'Body')"},
+                        "model_name": {"type": "string", "description": "Alias for base_object"},
                         "tool_controller": {"type": "string", "description": "Tool controller name"},
                         "name": {"type": "string", "description": "Name for the operation"},
+                        "faces": {"type": "array", "items": {"type": "string"}, "description": "List of face names (e.g. ['Face1']) to machine"},
+                        "edges": {"type": "array", "items": {"type": "string"}, "description": "List of edge names to trace"},
                         "step_down": {"type": "number", "description": "Step down depth per pass in mm"},
                         "cut_mode": {"type": "string", "enum": ["Climb", "Conventional"], "description": "Milling cut direction"},
                         "step_over": {"type": "number", "description": "Step over percentage (e.g. 50)"},

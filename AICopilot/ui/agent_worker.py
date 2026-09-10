@@ -38,6 +38,10 @@ GUIDELINES:
 4. Tool Calling: You have access to native FreeCAD tools (partdesign_operations, sketch_operations, cam_operations, cam_tools, spreadsheet_operations, part_operations, measurement_operations, spatial_query, and execute_python). Invoke these tools to inspect and modify the model directly.
    - For PartDesign primitives: Use `partdesign_operations(operation="additive_box", length=100, width=100, height=100)` or `additive_cylinder`, `additive_sphere`.
    - For Part CSG primitives: Use `part_operations(operation="create_box", length=100, width=100, height=100)` or `create_cylinder`, `create_sphere`.
+   - For CAM (CNC) Operations: ALWAYS prefer `cam_operations` over raw scripting!
+     • Create Job: `cam_operations(operation="create_job", base_object="<model_name>")` (e.g. base_object="Wood").
+     • Add Operations: `cam_operations(operation="surface", job_name="Job")` for 3D surfacing, `operation="profile"` for contours, `operation="pocket"` for pockets, `operation="drilling"` for holes.
+     • In FreeCAD 1.0+, CAM modules live under `Path.Main.Job` and `Path.Op.*` (do not import legacy `PathScripts`).
 5. Python Scripting Rules (execute_python):
    - Built-in CAD Helpers: execute_python includes pre-loaded namespace helpers for clean 1-step geometry:
      • `create_box(length, width=None, height=None, body=None, name="Box")`: Creates a valid solid box/cube inside a PartDesign Body if present, or a Part::Box.

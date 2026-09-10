@@ -636,6 +636,7 @@ class TestPostProcess(unittest.TestCase):
 class TestCreateJob(unittest.TestCase):
     def setUp(self):
         reset_mocks()
+        mock_Path_Main_Job.Create = MagicMock()
         self.handler = make_handler(CAMOpsHandler)
 
     def test_create_job_with_base_object(self):
@@ -689,6 +690,46 @@ class TestCreateJob(unittest.TestCase):
         })
 
         assert_error_contains(self, result, "ambiguous")
+        mock_Path_Main_Job.Create.assert_not_called()
+
+    def test_create_job_with_model_name_alias(self):
+        """model_name parameter alias used by LLM schemas must resolve properly."""
+        wood = make_box_object("Wood")
+        doc = make_mock_doc([wood])
+        mock_FreeCAD.ActiveDocument = doc
+
+        new_job = make_cam_job("Job_Wood")
+        mock_Path_Main_Job.Create = MagicMock(return_value=new_job)
+
+        result = self.handler.create_job({
+            'model_name': 'Wood', 'job_name': 'Job_Wood',
+        })
+
+        assert_success_contains(self, result, "Job_Wood", "Wood")
+        mock_Path_Main_Job.Create.assert_called_once_with("Job_Wood", [wood], None)
+
+    def test_create_job_auto_selects_single_solid(self):
+        """If base_object is omitted and doc contains a single solid, it should auto-select it."""
+        wood = make_box_object("Wood")
+        doc = make_mock_doc([wood])
+        mock_FreeCAD.ActiveDocument = doc
+
+        new_job = make_cam_job("Job")
+        mock_Path_Main_Job.Create = MagicMock(return_value=new_job)
+
+        result = self.handler.create_job({})
+
+        assert_success_contains(self, result, "Job", "Wood")
+        mock_Path_Main_Job.Create.assert_called_once_with("Job", [wood], None)
+
+    def test_create_job_no_base_object_returns_helpful_error(self):
+        """If doc has no solids and no base_object is given, must return clear error, not IndexError."""
+        doc = make_mock_doc([])
+        mock_FreeCAD.ActiveDocument = doc
+
+        result = self.handler.create_job({})
+
+        assert_error_contains(self, result, "base solid model is required")
         mock_Path_Main_Job.Create.assert_not_called()
 
 

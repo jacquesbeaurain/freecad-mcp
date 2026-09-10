@@ -334,6 +334,29 @@ class ExecutePythonOpsHandler(BaseHandler):
         except ImportError:
             pass
 
+        # PathScripts backward compatibility & CAM namespace helpers
+        try:
+            from ..compat_pathscripts import install_pathscripts_compat
+            install_pathscripts_compat()
+        except Exception:
+            try:
+                from compat_pathscripts import install_pathscripts_compat
+                install_pathscripts_compat()
+            except Exception:
+                pass
+
+        try:
+            import Path
+            self._python_namespace["Path"] = Path
+        except ImportError:
+            pass
+        try:
+            from Path.Main.Job import Create as CreateJob
+            self._python_namespace["CreateJob"] = CreateJob
+            self._python_namespace["PathJob"] = sys.modules.get("Path.Main.Job")
+        except ImportError:
+            pass
+
         # Ensure doc is readily available
         if FreeCAD.ActiveDocument:
             self._python_namespace["doc"] = FreeCAD.ActiveDocument

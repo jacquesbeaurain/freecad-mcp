@@ -10,8 +10,8 @@ class CAMOpsHandler(BaseHandler):
     """Handler for CAM (Path) workbench operations."""
 
     _ALLOWED_OPERATIONS = frozenset({
-        "create_job", "setup_stock", "profile", "pocket", "drilling", "adaptive",
-        "face", "helix", "slot", "engrave", "vcarve", "deburr", "surface",
+        "create_job", "setup_stock", "profile", "pocket", "pocket_shape", "drilling", "drill", "adaptive",
+        "face", "mill_face", "helix", "slot", "engrave", "vcarve", "deburr", "surface", "surface_milling",
         "surface_stl", "waterline", "pocket_3d", "thread_milling", "dogbone",
         "lead_in_out", "ramp_entry", "tag", "axis_map", "drag_knife", "z_correct",
         "create_tool", "tool_controller", "simulate", "post_process", "inspect",
@@ -47,8 +47,8 @@ class CAMOpsHandler(BaseHandler):
                 error = Exception("No active document")
                 return self.log_and_return("create_job", args, error=error, duration=time.time() - start_time)
 
-            job_name = args.get('name', 'Job')
-            base_object = args.get('base_object', '')
+            job_name = args.get('job_name') or args.get('name') or 'Job'
+            base_object = args.get('base_object') or args.get('model_name') or args.get('model') or args.get('base') or args.get('object_name') or ''
 
             # Prepare model list - MUST be a list, not individual objects
             model_list = []
@@ -61,8 +61,8 @@ class CAMOpsHandler(BaseHandler):
                 # extra behavior beyond what get_object provides.
                 try:
                     obj = self.get_object(base_object, doc)
-                    if not obj and base_object.strip() != base_object:
-                        obj = self.get_object(base_object.strip(), doc)
+                    if not obj and str(base_object).strip() != base_object:
+                        obj = self.get_object(str(base_object).strip(), doc)
                 except ValueError as e:
                     return self.log_and_return("create_job", args, error=e, duration=time.time() - start_time)
 
@@ -77,6 +77,36 @@ class CAMOpsHandler(BaseHandler):
                         f"Available: {', '.join(available)}"
                     )
                     return self.log_and_return("create_job", args, error=error, duration=time.time() - start_time)
+            else:
+                # Auto-detection: If no base object is specified, inspect doc.Objects
+                # for candidate solids (e.g. single PartDesign::Body or Part feature)
+                candidates = [
+                    o for o in doc.Objects
+                    if getattr(o, "TypeId", "") != "Path::FeaturePython"
+                    and not getattr(o, "TypeId", "").startswith("Path::")
+                    and (
+                        getattr(o, "TypeId", "") == "PartDesign::Body"
+                        or (hasattr(o, "Shape") and not o.Shape.isNull() and hasattr(o.Shape, "Solids") and len(o.Shape.Solids) > 0)
+                    )
+                ]
+                if len(candidates) == 1:
+                    obj = candidates[0]
+                    model_list = [obj]
+                    base_object = getattr(obj, "Label", None) or getattr(obj, "Name", "Model")
+
+            # FreeCAD's Path.Main.Job.Create(name, base) accesses base[0] unconditionally.
+            # Calling Create with an empty list raises IndexError: list index out of range.
+            if not model_list:
+                available = [
+                    f"{o.Name} ({o.Label})" for o in doc.Objects
+                    if not getattr(o, "TypeId", "").startswith("Path::")
+                ]
+                error = Exception(
+                    "A base solid model is required to create a CAM Job. "
+                    "Please specify base_object (or model_name). "
+                    f"Available objects in document: {', '.join(available) if available else 'None'}"
+                )
+                return self.log_and_return("create_job", args, error=error, duration=time.time() - start_time)
 
             # Create job programmatically WITHOUT GUI dialog
             # The Create function signature is: Create(name, base, templateFile=None)
@@ -94,10 +124,7 @@ class CAMOpsHandler(BaseHandler):
 
             self.recompute(doc)
 
-            if model_list:
-                result = f"Created CAM Job '{job.Name}' with base object '{base_object}'"
-            else:
-                result = f"Created CAM Job '{job.Name}' (no base object specified)"
+            result = f"Created CAM Job '{job.Name}' with base object '{base_object}'"
             return self.log_and_return("create_job", args, result=result, duration=time.time() - start_time)
 
         except ImportError:
@@ -361,8 +388,36 @@ class CAMOpsHandler(BaseHandler):
         return self._placeholder_operation("Deburr", args)
 
     def surface(self, args: Dict[str, Any]) -> str:
-        """Create a surface milling operation."""
-        return self._placeholder_operation("Surface Milling", args)
+        """Create a 3D surface milling operation."""
+        start_time = time.time()
+        try:
+            try:
+                from Path.Op.Surface import Create as CreateSurface
+            except ImportError:
+                try:
+                    import PathScripts.PathSurface as m
+                    CreateSurface = m.Create
+                except ImportError:
+                    return self._placeholder_operation("Surface Milling", args)
+
+            doc, op = self._create_path_op(CreateSurface, args, 'Surface')
+
+            if 'stepover' in args and hasattr(op, 'StepOver'):
+                op.StepOver = args['stepover']
+            if 'stepdown' in args and hasattr(op, 'StepDown'):
+                try:
+                    op.setExpression('StepDown', None)
+                except Exception:
+                    pass
+                op.StepDown = args['stepdown']
+
+            self.recompute(doc)
+            faces = args.get('faces', [])
+            face_info = f"faces={faces}" if faces else "whole model surface"
+            result = f"Created Surface operation '{op.Name}' in job '{args.get('job_name', 'Job')}' ({face_info})"
+            return self.log_and_return("surface", args, result=result, duration=time.time() - start_time)
+        except Exception as e:
+            return self.log_and_return("surface", args, error=e, duration=time.time() - start_time)
 
     def surface_stl(self, args: Dict[str, Any]) -> str:
         """Create an OCL PathDropCutter surface operation from an STL file.
@@ -1231,10 +1286,16 @@ class CAMOpsHandler(BaseHandler):
         if not doc:
             raise RuntimeError("No active document")
 
-        job_name = args.get('job_name', '')
+        job_name = args.get('job_name') or args.get('name') or ''
         job = self.get_object(job_name, doc) if job_name else None
         if not job:
-            raise RuntimeError(f"Job '{job_name}' not found. Create a CAM job first.")
+            # If job_name not specified or not found, try to locate any existing CAM Job in document
+            for o in getattr(doc, 'Objects', []):
+                if getattr(o, 'TypeId', '') == 'Path::FeaturePython' and 'Job' in getattr(o, 'Name', ''):
+                    job = o
+                    break
+            if not job:
+                raise RuntimeError(f"Job '{job_name}' not found. Create a CAM job first.")
 
         # FC 1.2: parentJob= only; passing obj= causes "Object can only be in a
         # single Group" if the object is already in job.Model.Group
@@ -1242,8 +1303,13 @@ class CAMOpsHandler(BaseHandler):
 
         subs = list(args.get('faces', [])) + list(args.get('edges', []))
         if subs:
-            base_obj_name = args.get('base_object') or 'Clone'
+            base_obj_name = args.get('base_object') or args.get('model_name') or args.get('model') or args.get('base') or 'Clone'
             base = self.get_object(base_obj_name, doc)
+            if not base and hasattr(job, 'Model') and job.Model:
+                # FreeCAD CAM Job clones the base model into job.Model.Group
+                for m in getattr(job.Model, 'Group', []):
+                    base = m
+                    break
             if not base:
                 # Do NOT silently proceed with op.Base unset — that produces
                 # either a whole-model-exterior toolpath (Profile) or a
@@ -1291,3 +1357,9 @@ class CAMOpsHandler(BaseHandler):
         operation = args.get('operation', '')
 
         return f"{dressup_name} dressup: This dressup is available in FreeCAD but not yet automated via MCP. Please apply '{dressup_name}' dressup to operation '{operation}' manually using the CAM workbench UI."
+
+    # Method aliases for compatibility with diverse LLM tool call conventions
+    pocket_shape = pocket
+    mill_face = face
+    drill = drilling
+    surface_milling = surface

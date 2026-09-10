@@ -36,4 +36,10 @@ except Exception:
 if mod_dir and mod_dir not in sys.path:
     sys.path.append(mod_dir)
 
+try:
+    from compat_pathscripts import install_pathscripts_compat
+    install_pathscripts_compat()
+except Exception as e:
+    FreeCAD.Console.PrintWarning(f"AICopilot: PathScripts compat setup: {e}\n")
+
 FreeCAD.Console.PrintMessage("AICopilot module loaded.\n")
