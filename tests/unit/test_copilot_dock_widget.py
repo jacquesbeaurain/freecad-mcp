@@ -53,11 +53,11 @@ def test_direct_tool_bridge_execution(mock_freecad):
     tb.FreeCAD.ActiveDocument = doc
 
     fake_server = MagicMock()
-    fake_server._execute_tool.return_value = json.dumps({"status": "ok"})
+    fake_server.spreadsheet_ops.get.return_value = {"status": "ok"}
 
     bridge = tb.DirectToolBridge(server=fake_server)
     result = bridge.execute_tool("spreadsheet_operations", {"operation": "get", "alias": "width"})
-    fake_server._execute_tool.assert_called_once_with("spreadsheet_operations", {"operation": "get", "alias": "width"})
+    fake_server.spreadsheet_ops.get.assert_called_once_with({"operation": "get", "alias": "width"})
     parsed = json.loads(result)
     assert parsed["status"] == "ok"
     doc.openTransaction.assert_called_once()

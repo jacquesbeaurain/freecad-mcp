@@ -83,8 +83,8 @@ class DirectToolBridge:
                 logger.debug(f"Could not open transaction: {e}")
 
         try:
-            # Direct in-memory dispatch to handler
-            result_str = server._execute_tool(tool_name, args)
+            # Direct synchronous in-memory dispatch to handler
+            result_str = self._dispatch_direct(server, tool_name, args)
 
             # Check if result indicates an error string before committing
             is_error = False
@@ -118,6 +118,134 @@ class DirectToolBridge:
                     pass
             logger.exception(f"Tool execution error in {tool_name}: {exc}")
             return json.dumps({"error": f"Tool execution failed: {exc}"})
+
+    def _dispatch_direct(self, server, tool_name: str, args: Dict[str, Any]) -> str:
+        """Invokes modular CAD handlers directly and synchronously on FreeCAD's GUI thread."""
+        op = args.get("operation", "")
+
+        try:
+            if tool_name == "partdesign_operations":
+                mapping = {
+                    "create_body": getattr(server.partdesign_ops, "create_body", None),
+                    "pad": getattr(server.partdesign_ops, "pad_sketch", None),
+                    "revolution": getattr(server.partdesign_ops, "revolution", None),
+                    "loft": getattr(server.partdesign_ops, "loft_profiles", None),
+                    "sweep": getattr(server.partdesign_ops, "sweep_path", None),
+                    "additive_pipe": getattr(server.partdesign_ops, "additive_pipe", None),
+                    "pocket": getattr(server.partdesign_ops, "pocket", None),
+                    "groove": getattr(server.partdesign_ops, "groove", None),
+                    "subtractive_loft": getattr(server.partdesign_ops, "subtractive_loft", None),
+                    "subtractive_sweep": getattr(server.partdesign_ops, "subtractive_sweep", None),
+                    "fillet": getattr(server.partdesign_ops, "fillet_edges", None),
+                    "chamfer": getattr(server.partdesign_ops, "chamfer_edges", None),
+                    "draft": getattr(server.partdesign_ops, "draft_faces", None),
+                    "shell": getattr(server.partdesign_ops, "shell_solid", None),
+                    "thickness": getattr(server.partdesign_ops, "add_thickness", None),
+                    "hole": getattr(server.partdesign_ops, "hole_wizard", None),
+                    "linear_pattern": getattr(server.partdesign_ops, "linear_pattern", None),
+                    "polar_pattern": getattr(server.partdesign_ops, "polar_pattern", None),
+                    "mirror": getattr(server.partdesign_ops, "mirror_feature", None),
+                }
+                fn = mapping.get(op) or getattr(server.partdesign_ops, op, None)
+                if not fn:
+                    raise ValueError(f"Unknown PartDesign operation: {op}")
+                res = fn(args)
+
+            elif tool_name == "sketch_operations":
+                mapping = {
+                    "create_sketch": getattr(server.sketch_ops, "create_sketch", None),
+                    "close_sketch": getattr(server.sketch_ops, "close_sketch", None),
+                    "verify_sketch": getattr(server.sketch_ops, "verify_sketch", None),
+                    "add_line": getattr(server.sketch_ops, "add_line", None),
+                    "add_circle": getattr(server.sketch_ops, "add_circle", None),
+                    "add_rectangle": getattr(server.sketch_ops, "add_rectangle", None),
+                    "add_arc": getattr(server.sketch_ops, "add_arc", None),
+                    "add_polygon": getattr(server.sketch_ops, "add_polygon", None),
+                    "add_slot": getattr(server.sketch_ops, "add_slot", None),
+                    "add_geometry": getattr(server.sketch_ops, "add_geometry", None),
+                    "add_constraint": getattr(server.sketch_ops, "add_constraint", None),
+                    "get_sketch": getattr(server.sketch_ops, "get_sketch", None),
+                    "solve_sketch": getattr(server.sketch_ops, "solve_sketch", None),
+                }
+                fn = mapping.get(op) or getattr(server.sketch_ops, op, None)
+                if not fn:
+                    raise ValueError(f"Unknown Sketch operation: {op}")
+                res = fn(args)
+
+            elif tool_name == "part_operations":
+                if op in ("box", "cylinder", "sphere", "cone", "torus", "wedge"):
+                    fn = getattr(server.primitives, f"create_{op}", None)
+                elif op in ("fuse", "cut", "common"):
+                    fn = getattr(server.boolean_ops, f"{op}_objects", None)
+                elif op in ("move", "rotate", "copy", "array"):
+                    fn = getattr(server.transforms, f"{op}_object", None)
+                elif op in ("extrude", "revolve", "loft", "sweep"):
+                    fn = getattr(server.part_ops, op, None)
+                elif op in ("mirror", "scale"):
+                    fn = getattr(server.part_ops, f"{op}_object", None)
+                else:
+                    fn = getattr(server.part_ops, op, None)
+                if not fn:
+                    raise ValueError(f"Unknown Part operation: {op}")
+                res = fn(args)
+
+            elif tool_name == "spreadsheet_operations":
+                fn = getattr(server.spreadsheet_ops, op, None)
+                if not fn:
+                    raise ValueError(f"Unknown Spreadsheet operation: {op}")
+                res = fn(args)
+
+            elif tool_name in ("cam_operations", "cam_tools", "cam_tool_controllers"):
+                handler = server.cam_ops if tool_name == "cam_operations" else getattr(server, tool_name)
+                fn = getattr(handler, op, None)
+                if not fn:
+                    raise ValueError(f"Unknown {tool_name} operation: {op}")
+                res = fn(args)
+
+            elif tool_name == "measurement_operations":
+                fn = getattr(server.measurement_ops, op, None)
+                if not fn:
+                    raise ValueError(f"Unknown Measurement operation: {op}")
+                res = fn(args)
+
+            elif tool_name == "spatial_query":
+                fn = getattr(server.spatial_ops, op, None)
+                if not fn:
+                    raise ValueError(f"Unknown Spatial operation: {op}")
+                res = fn(args)
+
+            elif tool_name == "assembly_operations":
+                fn = getattr(server.assembly_ops, op, None)
+                if not fn:
+                    raise ValueError(f"Unknown Assembly operation: {op}")
+                res = fn(args)
+
+            elif tool_name == "varset_operations":
+                fn = getattr(server.varset_ops, op, None)
+                if not fn:
+                    raise ValueError(f"Unknown VarSet operation: {op}")
+                res = fn(args)
+
+            elif tool_name == "execute_python":
+                res = server.execute_python_ops.execute(args)
+
+            elif tool_name == "build_sketch":
+                res = server.sketch_builder_ops.build_sketch(args)
+
+            elif tool_name == "run_inspector":
+                res = server.inspector_ops.run(args)
+
+            else:
+                # Fallback to server._execute_tool
+                res = server._execute_tool(tool_name, args)
+
+            if isinstance(res, (dict, list, bool, int, float)):
+                return json.dumps(res)
+            return str(res)
+
+        except Exception as e:
+            logger.exception(f"Direct handler dispatch error for {tool_name}: {e}")
+            return json.dumps({"error": str(e)})
 
     def get_tool_declarations(self) -> List[Dict[str, Any]]:
         """Returns standard FunctionDeclaration dictionaries for Gemini function calling."""
