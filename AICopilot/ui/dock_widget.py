@@ -1,0 +1,381 @@
+# FreeCAD AI Copilot Dock Widget
+# Copyright (c) 2026
+# SPDX-License-Identifier: LGPL-2.1-or-later
+#
+# Embedded PySide DockWidget providing direct conversational interaction,
+# live 3D selection awareness, and in-memory CAD tool execution.
+
+import html
+import logging
+import os
+import re
+from typing import Any, Dict, List, Optional
+
+try:
+    from PySide6 import QtCore, QtGui, QtWidgets
+except ImportError:
+    from PySide import QtCore, QtGui, QtWidgets
+
+import FreeCAD
+
+if FreeCAD.GuiUp:
+    import FreeCADGui
+else:
+    FreeCADGui = None
+
+from .agent_worker import CopilotAgentWorker, ToolCallRequest
+from .tool_bridge import DirectToolBridge
+
+logger = logging.getLogger("AICopilot.DockWidget")
+
+
+class ChatInputTextEdit(QtWidgets.QPlainTextEdit):
+    """Custom multi-line text edit that sends on Enter and allows Shift+Enter for newlines."""
+
+    sig_submit = QtCore.Signal()
+
+    def keyPressEvent(self, event: QtGui.QKeyEvent):
+        if event.key() in (QtCore.Qt.Key_Return, QtCore.Qt.Key_Enter):
+            if event.modifiers() & QtCore.Qt.ShiftModifier:
+                super().keyPressEvent(event)
+            else:
+                self.sig_submit.emit()
+                event.accept()
+        else:
+            super().keyPressEvent(event)
+
+
+class SelectionObserver:
+    """Listens to FreeCAD 3D viewport selections and notifies the UI."""
+
+    def __init__(self, callback):
+        self.callback = callback
+
+    def addSelection(self, doc, obj, sub, pnt):
+        self.callback()
+
+    def removeSelection(self, doc, obj, sub):
+        self.callback()
+
+    def setSelection(self, doc):
+        self.callback()
+
+    def clearSelection(self, doc):
+        self.callback()
+
+
+class AICopilotDockWidget(QtWidgets.QDockWidget):
+    """Native FreeCAD dock widget hosting the embedded AI Copilot assistant."""
+
+    def __init__(self, parent=None):
+        super().__init__("AI Copilot", parent)
+        self.setObjectName("AICopilotDockWidget")
+        self.setAllowedAreas(QtCore.Qt.LeftDockWidgetArea | QtCore.Qt.RightDockWidgetArea)
+
+        self.tool_bridge = DirectToolBridge()
+        self.worker = CopilotAgentWorker(self.tool_bridge, parent=self)
+        self._current_assistant_buffer = ""
+        self._selection_observer = None
+
+        self._init_ui()
+        self._wire_signals()
+        self._attach_selection_observer()
+
+        # Start the background worker thread
+        self.worker.start()
+
+    def closeEvent(self, event: QtGui.QCloseEvent):
+        """Clean up observer and stop worker on widget close."""
+        self._detach_selection_observer()
+        if self.worker.isRunning():
+            self.worker.stop()
+            self.worker.wait(1000)
+        super().closeEvent(event)
+
+    def _init_ui(self):
+        container = QtWidgets.QWidget(self)
+        layout = QtWidgets.QVBoxLayout(container)
+        layout.setContentsMargins(6, 6, 6, 6)
+        layout.setSpacing(6)
+
+        # ── Toolbar Row ──────────────────────────────────────────────
+        toolbar = QtWidgets.QHBoxLayout()
+        toolbar.setSpacing(4)
+
+        self.model_combo = QtWidgets.QComboBox()
+        self.model_combo.addItems(["gemini-2.5-flash", "gemini-2.5-pro"])
+        self.model_combo.setCurrentText(self.worker.model_name)
+        self.model_combo.currentTextChanged.connect(self.worker.set_model_name)
+        toolbar.addWidget(self.model_combo, stretch=1)
+
+        self.btn_undo = QtWidgets.QPushButton("↩ Undo")
+        self.btn_undo.setToolTip("Roll back the last document transaction (Ctrl+Z)")
+        self.btn_undo.clicked.connect(self._on_undo_clicked)
+        toolbar.addWidget(self.btn_undo)
+
+        self.btn_settings = QtWidgets.QPushButton("⚙ Key")
+        self.btn_settings.setToolTip("Configure Gemini API Key")
+        self.btn_settings.clicked.connect(self._on_settings_clicked)
+        toolbar.addWidget(self.btn_settings)
+
+        self.btn_clear = QtWidgets.QPushButton("🗑 Clear")
+        self.btn_clear.setToolTip("Clear conversation history")
+        self.btn_clear.clicked.connect(self._on_clear_clicked)
+        toolbar.addWidget(self.btn_clear)
+
+        layout.addLayout(toolbar)
+
+        # ── Live Selection Badge ─────────────────────────────────────
+        self.selection_label = QtWidgets.QLabel("🎯 Selection: None")
+        self.selection_label.setStyleSheet(
+            "background: palette(alternate-base); border-radius: 4px; padding: 4px 6px; font-size: 11px;"
+        )
+        self.selection_label.setWordWrap(True)
+        layout.addWidget(self.selection_label)
+
+        # ── Chat History Display ─────────────────────────────────────
+        self.chat_browser = QtWidgets.QTextBrowser()
+        self.chat_browser.setOpenExternalLinks(True)
+        self.chat_browser.setStyleSheet(
+            "QTextBrowser { font-family: sans-serif; font-size: 12px; line-height: 1.4; }"
+        )
+        layout.addWidget(self.chat_browser, stretch=1)
+
+        # ── Status Bar ───────────────────────────────────────────────
+        self.status_label = QtWidgets.QLabel("Ready")
+        self.status_label.setStyleSheet("color: gray; font-size: 11px; padding: 2px 4px;")
+        layout.addWidget(self.status_label)
+
+        # ── Input Area ───────────────────────────────────────────────
+        input_layout = QtWidgets.QHBoxLayout()
+        input_layout.setSpacing(4)
+
+        self.input_edit = ChatInputTextEdit()
+        self.input_edit.setPlaceholderText("Ask AI Copilot or request CAD action (Enter to send, Shift+Enter for newline)...")
+        self.input_edit.setFixedHeight(65)
+        self.input_edit.sig_submit.connect(self._on_send_clicked)
+        input_layout.addWidget(self.input_edit, stretch=1)
+
+        btn_column = QtWidgets.QVBoxLayout()
+        btn_column.setSpacing(2)
+
+        self.btn_send = QtWidgets.QPushButton("➤ Send")
+        self.btn_send.setStyleSheet("font-weight: bold;")
+        self.btn_send.clicked.connect(self._on_send_clicked)
+        btn_column.addWidget(self.btn_send)
+
+        self.btn_stop = QtWidgets.QPushButton("⏹ Stop")
+        self.btn_stop.setEnabled(False)
+        self.btn_stop.clicked.connect(self._on_stop_clicked)
+        btn_column.addWidget(self.btn_stop)
+
+        input_layout.addLayout(btn_column)
+        layout.addLayout(input_layout)
+
+        self.setWidget(container)
+        self._append_system_message("<b>FreeCAD AI Copilot ready.</b> Type a prompt or select geometry in the 3D view.")
+
+    def _wire_signals(self):
+        self.worker.sig_token.connect(self._on_token_received)
+        self.worker.sig_status.connect(self._on_status_changed)
+        self.worker.sig_tool_started.connect(self._on_tool_started)
+        self.worker.sig_tool_finished.connect(self._on_tool_finished)
+        self.worker.sig_turn_complete.connect(self._on_turn_complete)
+        self.worker.sig_error.connect(self._on_error)
+        self.worker.sig_request_main_thread_tool.connect(self._on_main_thread_tool_request)
+
+    # ── Selection Observer ───────────────────────────────────────────
+
+    def _attach_selection_observer(self):
+        if FreeCADGui and FreeCAD.GuiUp:
+            try:
+                self._selection_observer = SelectionObserver(self._update_selection_badge)
+                FreeCADGui.Selection.addObserver(self._selection_observer)
+                self._update_selection_badge()
+            except Exception as e:
+                logger.warning(f"Could not attach SelectionObserver: {e}")
+
+    def _detach_selection_observer(self):
+        if FreeCADGui and FreeCAD.GuiUp and self._selection_observer:
+            try:
+                FreeCADGui.Selection.removeObserver(self._selection_observer)
+                self._selection_observer = None
+            except Exception:
+                pass
+
+    def _get_selection_summary(self) -> Optional[str]:
+        if not FreeCADGui or not FreeCAD.GuiUp:
+            return None
+        sel_list = FreeCADGui.Selection.getSelectionEx()
+        if not sel_list:
+            return None
+
+        items = []
+        for sel in sel_list:
+            obj_name = sel.ObjectName
+            if sel.SubElementNames:
+                sub_names = ", ".join(sel.SubElementNames)
+                items.append(f"{obj_name} ({sub_names})")
+            else:
+                items.append(f"{obj_name}")
+        return "; ".join(items)
+
+    def _update_selection_badge(self):
+        summary = self._get_selection_summary()
+        if summary:
+            self.selection_label.setText(f"🎯 <b>Selected:</b> {html.escape(summary)}")
+            self.selection_label.setStyleSheet(
+                "background: #2a3a4a; color: #8ec5fc; border-radius: 4px; padding: 4px 6px; font-size: 11px;"
+            )
+        else:
+            self.selection_label.setText("🎯 Selection: None")
+            self.selection_label.setStyleSheet(
+                "background: palette(alternate-base); border-radius: 4px; padding: 4px 6px; font-size: 11px;"
+            )
+
+    # ── Chat Actions & Formatting ────────────────────────────────────
+
+    def _on_send_clicked(self):
+        prompt = self.input_edit.toPlainText().strip()
+        if not prompt:
+            return
+
+        self.input_edit.clear()
+        self.btn_send.setEnabled(False)
+        self.btn_stop.setEnabled(True)
+
+        selection_summary = self._get_selection_summary()
+        selection_ctx = f"[3D View Selection: {selection_summary}]" if selection_summary else None
+
+        self._append_user_message(prompt, selection_summary)
+        self._current_assistant_buffer = ""
+
+        # Enqueue prompt to background worker
+        self.worker.submit_prompt(prompt, selection_ctx)
+
+    def _on_stop_clicked(self):
+        self.worker.stop()
+        self.status_label.setText("Stopping...")
+        self.btn_stop.setEnabled(False)
+        self.btn_send.setEnabled(True)
+
+    def _on_clear_clicked(self):
+        self.worker.clear_history()
+        self.chat_browser.clear()
+        self._append_system_message("Conversation history cleared.")
+
+    def _on_undo_clicked(self):
+        doc = FreeCAD.ActiveDocument
+        if doc:
+            try:
+                doc.undo()
+                doc.recompute()
+                if FreeCADGui and FreeCAD.GuiUp:
+                    FreeCADGui.updateGui()
+                self._append_system_message("Undid last document action.")
+            except Exception as e:
+                self._append_system_message(f"Could not undo: {e}")
+        else:
+            self._append_system_message("No active document to undo.")
+
+    def _on_settings_clicked(self):
+        curr_key = os.environ.get("GEMINI_API_KEY", "")
+        try:
+            param = FreeCAD.ParamGet("User parameter:BaseApp/Preferences/AICopilot")
+            stored = param.GetString("GeminiApiKey", "")
+            if stored:
+                curr_key = stored
+        except Exception:
+            pass
+
+        key, ok = QtWidgets.QInputDialog.getText(
+            self,
+            "Gemini API Key",
+            "Enter your Google Gemini API Key:",
+            QtWidgets.QLineEdit.Password,
+            curr_key,
+        )
+        if ok and key:
+            try:
+                param = FreeCAD.ParamGet("User parameter:BaseApp/Preferences/AICopilot")
+                param.SetString("GeminiApiKey", key.strip())
+                self.worker.set_api_key(key.strip())
+                self._append_system_message("Gemini API key updated successfully.")
+            except Exception as e:
+                self._append_system_message(f"Failed to save API key: {e}")
+
+    # ── Worker Signal Handlers ───────────────────────────────────────
+
+    def _on_token_received(self, token: str):
+        self._current_assistant_buffer += token
+        # Live refresh of current assistant message
+        cursor = self.chat_browser.textCursor()
+        cursor.movePosition(QtGui.QTextCursor.End)
+        self.chat_browser.setTextCursor(cursor)
+        self.chat_browser.insertPlainText(token)
+        self.chat_browser.ensureCursorVisible()
+
+    def _on_status_changed(self, status: str):
+        self.status_label.setText(status)
+
+    def _on_tool_started(self, tool_name: str, args: dict):
+        args_summary = ", ".join(f"{k}={v}" for k, v in list(args.items())[:3])
+        if len(args) > 3:
+            args_summary += ", ..."
+        chip = f"<div style='color: #4a90e2; font-family: monospace; font-size: 11px; margin: 4px 0;'>" \
+               f"⚡ <b>Executing:</b> {html.escape(tool_name)}({html.escape(args_summary)})</div>"
+        self._append_html(chip)
+
+    def _on_tool_finished(self, tool_name: str, result_str: str):
+        # Truncate output for chat preview
+        preview = result_str[:250] + ("..." if len(result_str) > 250 else "")
+        chip = f"<div style='color: #50b37b; font-family: monospace; font-size: 11px; margin: 2px 0 6px 12px;'>" \
+               f"✔ <b>Result:</b> {html.escape(preview)}</div>"
+        self._append_html(chip)
+
+    def _on_turn_complete(self, full_response: str):
+        self.btn_send.setEnabled(True)
+        self.btn_stop.setEnabled(False)
+        self.status_label.setText("Ready")
+        self._current_assistant_buffer = ""
+        self._append_html("<hr style='border: none; border-top: 1px solid palette(mid); margin: 8px 0;'>")
+
+    def _on_error(self, error_msg: str):
+        self._append_html(f"<div style='color: #e74c3c; padding: 4px 0;'><b>Error:</b> {html.escape(error_msg)}</div>")
+        self.btn_send.setEnabled(True)
+        self.btn_stop.setEnabled(False)
+        self.status_label.setText("Error")
+
+    @QtCore.Slot(object)
+    def _on_main_thread_tool_request(self, req: ToolCallRequest):
+        """Executed on the main GUI thread when the background worker requests a CAD tool."""
+        try:
+            result = self.tool_bridge.execute_tool(req.tool_name, req.args)
+            req.set_result(result)
+        except Exception as exc:
+            logger.exception(f"Main thread tool dispatch error: {exc}")
+            req.set_exception(exc)
+
+    # ── Formatting Helpers ───────────────────────────────────────────
+
+    def _append_user_message(self, text: str, selection_badge: Optional[str] = None):
+        badge_html = ""
+        if selection_badge:
+            badge_html = f"<div style='font-size: 10px; color: #8ec5fc; margin-bottom: 2px;'>" \
+                         f"🎯 {html.escape(selection_badge)}</div>"
+        content_html = f"<div style='background: palette(midlight); border-radius: 6px; padding: 6px 10px; margin: 6px 0;'>" \
+                       f"{badge_html}<b>You:</b> {html.escape(text)}</div>"
+        self._append_html(content_html)
+
+    def _append_system_message(self, msg_html: str):
+        formatted = f"<div style='color: gray; font-size: 11px; margin: 4px 0;'>ℹ {msg_html}</div>"
+        self._append_html(formatted)
+
+    def _append_html(self, html_content: str):
+        cursor = self.chat_browser.textCursor()
+        cursor.movePosition(QtGui.QTextCursor.End)
+        self.chat_browser.setTextCursor(cursor)
+        self.chat_browser.insertHtml(html_content)
+        cursor.movePosition(QtGui.QTextCursor.End)
+        self.chat_browser.setTextCursor(cursor)
+        self.chat_browser.ensureCursorVisible()
