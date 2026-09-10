@@ -658,3 +658,44 @@ def test_theme_palette_keys():
     assert "code_bg" in pal
     assert "res_success_bg" in pal
     assert "res_err_bg" in pal
+
+
+
+def test_system_instruction_scripting_guidelines():
+    from AICopilot.ui.agent_worker import SYSTEM_INSTRUCTION
+
+    assert "PartDesign::AdditiveBox" in SYSTEM_INSTRUCTION
+    assert "CRITICAL SKETCHER SYMMETRY RULE" in SYSTEM_INSTRUCTION
+    assert "create_box" in SYSTEM_INSTRUCTION
+
+
+def test_execute_python_cad_helpers(mock_freecad):
+    from AICopilot.handlers.execute_python_ops import ExecutePythonOpsHandler
+
+    handler = ExecutePythonOpsHandler()
+    assert "create_box" in handler._python_namespace or hasattr(handler, "run_code")
+
+    # Run code with create_box
+    res = handler.run_code("box = create_box(100, 100, 100)")
+    assert res.get("success") is True
+
+
+def test_execute_python_geometry_health_validation(mock_freecad):
+    from AICopilot.handlers.execute_python_ops import ExecutePythonOpsHandler
+
+    doc = MagicMock()
+    bad_obj = MagicMock()
+    bad_obj.Name = "BadSketch"
+    bad_obj.TypeId = "Sketcher::SketchObject"
+    bad_obj.State = ["Touched", "Invalid"]
+    bad_obj.isDerivedFrom.return_value = True
+    bad_obj.solve.return_value = -4
+
+    doc.Objects = [bad_obj]
+    mock_freecad.ActiveDocument = doc
+
+    handler = ExecutePythonOpsHandler()
+    res = handler.run_code("x = 42")
+    assert res.get("success") is False
+    assert "Geometry validation failed" in res.get("error", "")
+    assert "invalid constraints" in res.get("error", "")
