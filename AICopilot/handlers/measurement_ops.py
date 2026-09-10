@@ -11,7 +11,8 @@ class MeasurementOpsHandler(BaseHandler):
     _ALLOWED_OPERATIONS = frozenset({
         "measure_distance", "get_volume", "get_bounding_box", "get_mass_properties",
         "get_surface_area", "get_center_of_mass", "count_elements", "list_faces",
-        "check_solid",
+        "check_solid", "bounding_box", "volume", "surface_area", "mass_properties",
+        "center_of_mass",
     })
 
     def measure_distance(self, args: Dict[str, Any]) -> str:
@@ -60,11 +61,30 @@ class MeasurementOpsHandler(BaseHandler):
     def get_bounding_box(self, args: Dict[str, Any]) -> str:
         """Get bounding box dimensions of an object."""
         try:
-            object_name = args.get('object_name', '')
+            object_name = args.get('object_name') or args.get('name') or args.get('target') or args.get('body_name', '')
 
-            doc, obj, err = self.resolve_object(object_name, attr='Shape')
+            doc = self.get_document()
+            if not doc:
+                return "No active document"
+
+            if not object_name:
+                # Auto-fallback: check active body or first object with shape
+                for o in getattr(doc, 'Objects', []):
+                    if o.TypeId == 'PartDesign::Body':
+                        object_name = o.Name
+                        break
+                if not object_name:
+                    for o in getattr(doc, 'Objects', []):
+                        if hasattr(o, 'Shape') and not o.Shape.isNull():
+                            object_name = o.Name
+                            break
+
+            doc, obj, err = self.resolve_object(object_name, doc=doc, attr='Shape')
             if err:
                 return err
+
+            if obj.Shape.isNull():
+                return f"Object '{object_name}' has no solid geometry or 3D shape yet."
 
             bb = obj.Shape.BoundBox
             return (
@@ -76,6 +96,8 @@ class MeasurementOpsHandler(BaseHandler):
 
         except Exception as e:
             return f"Error calculating bounding box: {e}"
+
+    bounding_box = get_bounding_box
 
     def get_mass_properties(self, args: Dict[str, Any]) -> str:
         """Get mass properties of an object."""
@@ -185,6 +207,11 @@ class MeasurementOpsHandler(BaseHandler):
 
         except Exception as e:
             return f"Error listing faces: {e}"
+
+    volume = get_volume
+    surface_area = get_surface_area
+    mass_properties = get_mass_properties
+    center_of_mass = get_center_of_mass
 
     def check_solid(self, args: Dict[str, Any]) -> str:
         """Check if object is a valid closed solid."""

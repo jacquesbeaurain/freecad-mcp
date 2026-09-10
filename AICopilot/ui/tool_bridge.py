@@ -246,8 +246,9 @@ class DirectToolBridge:
                 res = fn(args)
 
             elif tool_name == "part_operations":
-                if op in ("box", "cylinder", "sphere", "cone", "torus", "wedge"):
-                    fn = getattr(server.primitives, f"create_{op}", None)
+                norm_op = op[7:] if op.startswith("create_") else op
+                if norm_op in ("box", "cylinder", "sphere", "cone", "torus", "wedge"):
+                    fn = getattr(server.primitives, f"create_{norm_op}", None)
                 elif op in ("fuse", "cut", "common"):
                     fn = getattr(server.boolean_ops, f"{op}_objects", None)
                 elif op in ("move", "rotate", "copy", "array"):
@@ -276,7 +277,14 @@ class DirectToolBridge:
                 res = fn(args)
 
             elif tool_name == "measurement_operations":
-                fn = getattr(server.measurement_ops, op, None)
+                op_map = {
+                    "bounding_box": getattr(server.measurement_ops, "get_bounding_box", None),
+                    "volume": getattr(server.measurement_ops, "get_volume", None),
+                    "surface_area": getattr(server.measurement_ops, "get_surface_area", None),
+                    "mass_properties": getattr(server.measurement_ops, "get_mass_properties", None),
+                    "center_of_mass": getattr(server.measurement_ops, "get_center_of_mass", None),
+                }
+                fn = op_map.get(op) or getattr(server.measurement_ops, op, None) or getattr(server.measurement_ops, f"get_{op}", None)
                 if not fn:
                     raise ValueError(f"Unknown Measurement operation: {op}")
                 res = fn(args)
@@ -465,7 +473,7 @@ class DirectToolBridge:
                     "properties": {
                         "operation": {
                             "type": "string",
-                            "enum": ["measure_distance", "bounding_box", "volume", "surface_area"],
+                            "enum": ["bounding_box", "get_bounding_box", "volume", "get_volume", "surface_area", "get_surface_area", "measure_distance", "mass_properties", "center_of_mass", "count_elements", "check_solid"],
                             "description": "Measurement to perform"
                         },
                         "object_name": {"type": "string", "description": "DocumentObject name to measure"},

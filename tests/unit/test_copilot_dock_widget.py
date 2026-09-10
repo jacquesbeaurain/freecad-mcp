@@ -699,3 +699,36 @@ def test_execute_python_geometry_health_validation(mock_freecad):
     assert res.get("success") is False
     assert "Geometry validation failed" in res.get("error", "")
     assert "invalid constraints" in res.get("error", "")
+
+
+
+def test_direct_tool_bridge_measurement_bounding_box(mock_freecad):
+    import AICopilot.ui.tool_bridge as tb
+
+    doc = MagicMock()
+    mock_freecad.ActiveDocument = doc
+    tb.FreeCAD.ActiveDocument = doc
+
+    fake_server = MagicMock()
+    fake_server.measurement_ops.get_bounding_box.return_value = "Bounding box of Cube: X: 0 to 100"
+
+    bridge = tb.DirectToolBridge(server=fake_server)
+    res = bridge.execute_tool("measurement_operations", {"operation": "bounding_box", "object_name": "Cube"})
+    fake_server.measurement_ops.get_bounding_box.assert_called_once_with({"operation": "bounding_box", "object_name": "Cube"})
+    assert "Bounding box of Cube" in res
+
+
+def test_direct_tool_bridge_part_operations_create_box(mock_freecad):
+    import AICopilot.ui.tool_bridge as tb
+
+    doc = MagicMock()
+    mock_freecad.ActiveDocument = doc
+    tb.FreeCAD.ActiveDocument = doc
+
+    fake_server = MagicMock()
+    fake_server.primitives.create_box.return_value = "Created box: Box (100x100x100mm)"
+
+    bridge = tb.DirectToolBridge(server=fake_server)
+    res = bridge.execute_tool("part_operations", {"operation": "create_box", "length": 100, "width": 100, "height": 100})
+    fake_server.primitives.create_box.assert_called_once_with({"operation": "create_box", "length": 100, "width": 100, "height": 100})
+    assert "Created box" in res
