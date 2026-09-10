@@ -11,10 +11,12 @@ Older scripts, macros, and LLM-generated code often still attempt:
 
 This module installs a sys.meta_path finder, pre-populates sys.modules,
 and provides a virtual PathScripts module so that legacy imports resolve
-transparently and instantly to their modern FreeCAD equivalents.
+transparently and instantly to their modern FreeCAD equivalents while
+preserving any native on-disk modules (like PathScripts.PathUtils).
 """
 
 import importlib
+import importlib.machinery
 import importlib.util
 import logging
 import sys
@@ -23,7 +25,9 @@ from typing import Optional, Tuple, Any
 
 logger = logging.getLogger(__name__)
 
-# Map legacy PathScripts module name to modern FreeCAD module path
+# Map legacy PathScripts module name to modern FreeCAD module path.
+# Note: Real files existing in FreeCAD's PathScripts directory (like PathUtils and PathPropertyBag)
+# are not in this dict so they continue to resolve natively from disk.
 _PATHSCRIPTS_REDIRECTS = {
     "PathJob": "Path.Main.Job",
     "PathJobGui": "Path.Main.Gui.Job",
@@ -48,8 +52,6 @@ _PATHSCRIPTS_REDIRECTS = {
     "PathPreferences": "Path.Preferences",
     "PathLog": "Path.Log",
     "PathGeom": "Path.Geom",
-    "PathUtils": "PathScripts.PathUtils",
-    "PathPropertyBag": "PathScripts.PathPropertyBag",
 }
 
 # Mapping of CAM operation names to candidate module paths (modern, fallbacks, legacy)
@@ -102,8 +104,9 @@ def detect_cam_environment() -> str:
 
     # 3. Check for native legacy PathScripts on disk (<1.0)
     if "PathScripts" in sys.modules and not isinstance(sys.modules["PathScripts"], _VirtualPathScriptsPackage):
-        CAM_MODE = "legacy"
-        return CAM_MODE
+        if hasattr(sys.modules["PathScripts"], "PathJob"):
+            CAM_MODE = "legacy"
+            return CAM_MODE
 
     try:
         spec = importlib.util.find_spec("PathScripts.PathJob")
@@ -144,8 +147,8 @@ class PathScriptsCompatFinder:
     def find_spec(cls, fullname: str, path=None, target=None):
         if fullname.startswith("PathScripts."):
             sub = fullname.split(".", 1)[1]
-            target_mod = _PATHSCRIPTS_REDIRECTS.get(sub)
-            if target_mod:
+            if "." not in sub and sub in _PATHSCRIPTS_REDIRECTS:
+                target_mod = _PATHSCRIPTS_REDIRECTS[sub]
                 try:
                     spec = importlib.util.find_spec(target_mod)
                     if spec:
@@ -157,7 +160,7 @@ class PathScriptsCompatFinder:
 
 class _VirtualPathScriptsPackage(types.ModuleType):
     """Virtual package module for PathScripts allowing attribute access like
-    `from PathScripts import PathJob`."""
+    `from PathScripts import PathJob` while permitting resolution of native files."""
 
     def __getattr__(self, name: str):
         target = _PATHSCRIPTS_REDIRECTS.get(name)
@@ -171,6 +174,15 @@ class _VirtualPathScriptsPackage(types.ModuleType):
                 return mod
             except Exception as e:
                 logger.warning("Failed to import redirected module %s: %s", target, e)
+
+        # Fall back to trying to load real submodules from disk (e.g. PathUtils, PathPropertyBag)
+        try:
+            mod = importlib.import_module(f"PathScripts.{name}")
+            setattr(self, name, mod)
+            return mod
+        except Exception:
+            pass
+
         raise AttributeError(f"module 'PathScripts' has no attribute '{name}'")
 
 
@@ -185,19 +197,36 @@ def install_pathscripts_compat() -> str:
     if not any(isinstance(finder, type) and finder.__name__ == "PathScriptsCompatFinder" for finder in sys.meta_path):
         sys.meta_path.insert(0, PathScriptsCompatFinder)
 
-    # 2. Ensure PathScripts exists as a package in sys.modules
-    existing_mod = sys.modules.get("PathScripts")
-    if existing_mod is None or not isinstance(existing_mod, _VirtualPathScriptsPackage):
+    # 2. Get or import real PathScripts module if present on disk
+    real_mod = sys.modules.get("PathScripts")
+    if real_mod is None:
+        try:
+            real_mod = importlib.import_module("PathScripts")
+        except Exception:
+            pass
+
+    real_paths = []
+    if real_mod and hasattr(real_mod, "__path__"):
+        real_paths = list(real_mod.__path__)
+    else:
+        try:
+            spec = importlib.machinery.PathFinder.find_spec("PathScripts")
+            if spec and spec.submodule_search_locations:
+                real_paths = list(spec.submodule_search_locations)
+        except Exception:
+            pass
+
+    if real_mod is not None:
+        real_mod.__class__ = _VirtualPathScriptsPackage
+        virtual_mod = real_mod
+    else:
         virtual_mod = _VirtualPathScriptsPackage("PathScripts")
         virtual_mod.__doc__ = "Compatibility bridge for legacy FreeCAD PathScripts imports"
-        virtual_mod.__path__ = getattr(existing_mod, "__path__", [])
-        if existing_mod:
-            for k, v in existing_mod.__dict__.items():
-                if not k.startswith("__"):
-                    setattr(virtual_mod, k, v)
+        virtual_mod.__path__ = real_paths
         sys.modules["PathScripts"] = virtual_mod
-    else:
-        virtual_mod = existing_mod
+
+    if not getattr(virtual_mod, "__path__", None) and real_paths:
+        virtual_mod.__path__ = real_paths
 
     # 3. If modern CAM is available, pre-populate sys.modules with redirected modules
     # so subsequent imports resolve in O(1) time without finders or exception overhead
