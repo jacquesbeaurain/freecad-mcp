@@ -1,4 +1,4 @@
-"""Unit tests for PathScripts backward compatibility redirector."""
+"""Unit tests for CAM and PathScripts backward compatibility redirector."""
 
 import importlib
 import sys
@@ -14,12 +14,14 @@ from AICopilot.compat_pathscripts import (
     get_job_create,
     get_job_viewprovider,
     get_stock_factories,
+    _CAM_MODULE_REDIRECTS,
     _PATHSCRIPTS_REDIRECTS,
     _OP_MODULE_MAP,
+    CAMModuleCompatFinder,
 )
 
 
-class TestPathScriptsCompat(unittest.TestCase):
+class TestCAMModuleCompat(unittest.TestCase):
     def setUp(self):
         install_pathscripts_compat()
 
@@ -30,14 +32,26 @@ class TestPathScriptsCompat(unittest.TestCase):
         self.assertEqual(_PATHSCRIPTS_REDIRECTS["PathProfile"], "Path.Op.Profile")
         self.assertIn("PathSurface", _PATHSCRIPTS_REDIRECTS)
         self.assertEqual(_PATHSCRIPTS_REDIRECTS["PathSurface"], "Path.Op.Surface")
+        # Intuitive Path.Op aliases
+        self.assertEqual(_CAM_MODULE_REDIRECTS["Path.Op.Face"], "Path.Op.MillFace")
+        self.assertEqual(_CAM_MODULE_REDIRECTS["Path.Op.Facing"], "Path.Op.MillFace")
+        self.assertEqual(_CAM_MODULE_REDIRECTS["Path.Op.Drill"], "Path.Op.Drilling")
+        self.assertEqual(_CAM_MODULE_REDIRECTS["Path.Op.Contour"], "Path.Op.Profile")
+        # Root shortcuts
+        self.assertEqual(_CAM_MODULE_REDIRECTS["Path.Job"], "Path.Main.Job")
+        self.assertEqual(_CAM_MODULE_REDIRECTS["Path.Stock"], "Path.Main.Stock")
+        self.assertEqual(_CAM_MODULE_REDIRECTS["Path.ToolBit"], "Path.Tool.Bit")
 
     def test_import_virtual_pathscripts_attribute(self):
         import PathScripts
         self.assertTrue(hasattr(PathScripts, "__path__"))
 
+    def test_meta_path_finder_resolves_path_op_face(self):
+        spec = CAMModuleCompatFinder.find_spec("Path.Op.Face")
+        self.assertTrue(spec is None or spec is not None)
+
     def test_meta_path_finder_resolves_pathscripts_submodule(self):
-        from AICopilot.compat_pathscripts import PathScriptsCompatFinder
-        spec = PathScriptsCompatFinder.find_spec("PathScripts.PathJob")
+        spec = CAMModuleCompatFinder.find_spec("PathScripts.PathJob")
         self.assertTrue(spec is None or spec is not None)
 
     def test_virtual_package_attribute_access_dynamic_import(self):
@@ -54,6 +68,58 @@ class TestPathScriptsCompat(unittest.TestCase):
         finally:
             sys.modules.pop("Path.Main.Job", None)
             sys.modules.pop("PathScripts.PathJob", None)
+
+    def test_path_op_face_resolves_to_millface(self):
+        fake_path = types.ModuleType("Path")
+        fake_path.__path__ = []
+        sys.modules["Path"] = fake_path
+
+        fake_path_op = types.ModuleType("Path.Op")
+        fake_path_op.__path__ = []
+        sys.modules["Path.Op"] = fake_path_op
+
+        fake_millface = types.ModuleType("Path.Op.MillFace")
+        fake_millface.Create = lambda *args: "fake_millface_create"
+        sys.modules["Path.Op.MillFace"] = fake_millface
+
+        # Re-run install to bind aliases
+        import AICopilot.compat_pathscripts as cp
+        cp._installed = False
+        cp.install_pathscripts_compat()
+
+        try:
+            import Path.Op.Face as PathFace
+            self.assertEqual(PathFace, fake_millface)
+            self.assertEqual(PathFace.Create(), "fake_millface_create")
+            self.assertEqual(fake_path_op.Face, fake_millface)
+        finally:
+            sys.modules.pop("Path.Op.MillFace", None)
+            sys.modules.pop("Path.Op.Face", None)
+            sys.modules.pop("Path.Op", None)
+            sys.modules.pop("Path", None)
+
+    def test_path_job_resolves_to_main_job(self):
+        fake_path = types.ModuleType("Path")
+        fake_path.__path__ = []
+        sys.modules["Path"] = fake_path
+
+        fake_job = types.ModuleType("Path.Main.Job")
+        fake_job.Create = lambda *args: "fake_job_create"
+        sys.modules["Path.Main.Job"] = fake_job
+
+        import AICopilot.compat_pathscripts as cp
+        cp._installed = False
+        cp.install_pathscripts_compat()
+
+        try:
+            import Path.Job as DirectJob
+            self.assertEqual(DirectJob, fake_job)
+            self.assertEqual(DirectJob.Create(), "fake_job_create")
+            self.assertEqual(fake_path.Job, fake_job)
+        finally:
+            sys.modules.pop("Path.Main.Job", None)
+            sys.modules.pop("Path.Job", None)
+            sys.modules.pop("Path", None)
 
     def test_detect_cam_environment(self):
         mode = detect_cam_environment()
