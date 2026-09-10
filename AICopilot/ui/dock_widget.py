@@ -41,6 +41,52 @@ DEFAULT_GEMINI_MODELS = [
 ]
 
 
+def format_user_friendly_error(error_input: Any) -> str:
+    """Extract a clean, human-readable error message, stripping raw JSON and dicts."""
+    raw = str(error_input).strip()
+
+    code = None
+    if "503" in raw or "UNAVAILABLE" in raw:
+        code = 503
+    elif "404" in raw or "NOT_FOUND" in raw:
+        code = 404
+    elif "429" in raw or "RESOURCE_EXHAUSTED" in raw:
+        code = 429
+    elif "400" in raw or "INVALID_ARGUMENT" in raw:
+        code = 400
+    elif "403" in raw or "PERMISSION_DENIED" in raw:
+        code = 403
+
+    if "API Key is missing" in raw:
+        return "Gemini API Key is missing. Please configure your key via the ⚙ Key button."
+
+    # Look for 'message': '...' or "message": "..." in JSON/dict strings
+    msg_match = re.search(r"['\"]message['\"]\s*:\s*['\"]([^'\"]+)['\"]", raw)
+    if msg_match:
+        extracted = msg_match.group(1).strip()
+        if code == 503:
+            return f"Model Busy (503): {extracted}"
+        elif code == 404:
+            return f"Model Unavailable (404): {extracted}"
+        elif code == 429:
+            return f"Rate Limit Exceeded (429): {extracted}"
+        elif code:
+            return f"API Error ({code}): {extracted}"
+        return extracted
+
+    # Strip prefixes like google.genai.errors.ServerError: or Agent Error:
+    cleaned = re.sub(r"^(google\.genai\.errors\.\w+:\s*|Agent Error:\s*)+", "", raw)
+    # Strip any trailing JSON / dict dictionary blob starting with {'error' or {"error"
+    cleaned = re.split(r"\s*[\{\[]\s*['\"]error", cleaned)[0].strip()
+    cleaned = cleaned.rstrip(".:, ")
+    if cleaned:
+        if code and str(code) not in cleaned:
+            return f"API Error ({code}): {cleaned}"
+        return cleaned
+
+    return raw
+
+
 class ChatInputTextEdit(QtWidgets.QPlainTextEdit):
     """Custom multi-line text edit that sends on Enter and allows Shift+Enter for newlines."""
 
@@ -90,6 +136,7 @@ class AICopilotDockWidget(QtWidgets.QDockWidget):
         self.worker = CopilotAgentWorker(self.tool_bridge, parent=self)
         self._current_assistant_buffer = ""
         self._selection_observer = None
+        self._last_submitted_prompt: Optional[str] = None
 
         self._init_ui()
         self._wire_signals()
@@ -121,7 +168,8 @@ class AICopilotDockWidget(QtWidgets.QDockWidget):
         self.model_combo.setEditable(True)
         self.model_combo.addItems(DEFAULT_GEMINI_MODELS)
         self.model_combo.setCurrentText(self.worker.model_name)
-        self.model_combo.currentTextChanged.connect(self.worker.set_model_name)
+        self.model_combo.currentTextChanged.connect(self._on_model_changed)
+        self.model_combo.activated.connect(lambda _: self._dismiss_error_banner())
         toolbar.addWidget(self.model_combo, stretch=1)
 
         self.btn_undo = QtWidgets.QPushButton("↩ Undo")
@@ -162,6 +210,39 @@ class AICopilotDockWidget(QtWidgets.QDockWidget):
         self.status_label.setStyleSheet("color: gray; font-size: 11px; padding: 2px 4px;")
         layout.addWidget(self.status_label)
 
+        # ── Error Banner (Dismissible) ──────────────────────────────
+        self.error_frame = QtWidgets.QFrame()
+        self.error_frame.setObjectName("ErrorBanner")
+        self.error_frame.setStyleSheet(
+            "#ErrorBanner { background: rgba(231, 76, 60, 0.12); border: 1px solid #e74c3c; "
+            "border-radius: 4px; padding: 2px 4px; }"
+        )
+        error_layout = QtWidgets.QHBoxLayout(self.error_frame)
+        error_layout.setContentsMargins(6, 4, 6, 4)
+        error_layout.setSpacing(6)
+
+        self.error_icon = QtWidgets.QLabel("⚠️")
+        self.error_icon.setStyleSheet("font-size: 13px;")
+        error_layout.addWidget(self.error_icon)
+
+        self.error_label = QtWidgets.QLabel()
+        self.error_label.setWordWrap(True)
+        self.error_label.setStyleSheet("color: #e74c3c; font-size: 11px; font-weight: 500;")
+        error_layout.addWidget(self.error_label, stretch=1)
+
+        self.btn_dismiss_error = QtWidgets.QPushButton("✕")
+        self.btn_dismiss_error.setToolTip("Dismiss error")
+        self.btn_dismiss_error.setFixedSize(18, 18)
+        self.btn_dismiss_error.setStyleSheet(
+            "QPushButton { border: none; font-size: 11px; font-weight: bold; color: #888; background: transparent; } "
+            "QPushButton:hover { color: #e74c3c; background: rgba(231, 76, 60, 0.2); border-radius: 9px; }"
+        )
+        self.btn_dismiss_error.clicked.connect(self._dismiss_error_banner)
+        error_layout.addWidget(self.btn_dismiss_error)
+
+        self.error_frame.setVisible(False)
+        layout.addWidget(self.error_frame)
+
         # ── Input Area ───────────────────────────────────────────────
         input_layout = QtWidgets.QHBoxLayout()
         input_layout.setSpacing(4)
@@ -170,6 +251,7 @@ class AICopilotDockWidget(QtWidgets.QDockWidget):
         self.input_edit.setPlaceholderText("Ask AI Copilot or request CAD action (Enter to send, Shift+Enter for newline)...")
         self.input_edit.setFixedHeight(65)
         self.input_edit.sig_submit.connect(self._on_send_clicked)
+        self.input_edit.textChanged.connect(self._on_input_text_changed)
         input_layout.addWidget(self.input_edit, stretch=1)
 
         btn_column = QtWidgets.QVBoxLayout()
@@ -252,11 +334,25 @@ class AICopilotDockWidget(QtWidgets.QDockWidget):
 
     # ── Chat Actions & Formatting ────────────────────────────────────
 
+    def _on_model_changed(self, model_name: str):
+        self._dismiss_error_banner()
+        self.worker.set_model_name(model_name)
+
+    def _dismiss_error_banner(self):
+        self.error_frame.setVisible(False)
+        self.error_label.setText("")
+
+    def _on_input_text_changed(self):
+        if self.error_frame.isVisible():
+            self._dismiss_error_banner()
+
     def _on_send_clicked(self):
         prompt = self.input_edit.toPlainText().strip()
         if not prompt:
             return
 
+        self._last_submitted_prompt = prompt
+        self._dismiss_error_banner()
         self.input_edit.clear()
         self.btn_send.setEnabled(False)
         self.btn_stop.setEnabled(True)
@@ -419,6 +515,7 @@ class AICopilotDockWidget(QtWidgets.QDockWidget):
         self._append_html(chip)
 
     def _on_turn_complete(self, full_response: str):
+        self._last_submitted_prompt = None
         self.btn_send.setEnabled(True)
         self.btn_stop.setEnabled(False)
         self.status_label.setText("Ready")
@@ -426,10 +523,27 @@ class AICopilotDockWidget(QtWidgets.QDockWidget):
         self._append_html("<hr style='border: none; border-top: 1px solid palette(mid); margin: 8px 0;'>")
 
     def _on_error(self, error_msg: str):
-        self._append_html(f"<div style='color: #e74c3c; padding: 4px 0;'><b>Error:</b> {html.escape(error_msg)}</div>")
+        cleaned_msg = format_user_friendly_error(error_msg)
+        self.error_label.setText(cleaned_msg)
+        self.error_frame.setVisible(True)
+        self._append_html(
+            f"<div style='color: #e74c3c; font-size: 11px; padding: 4px 0;'>"
+            f"⚠️ <b>Error:</b> {html.escape(cleaned_msg)}</div>"
+        )
         self.btn_send.setEnabled(True)
         self.btn_stop.setEnabled(False)
         self.status_label.setText("Error")
+
+        # Do not clear prompt on error: restore so user can easily retry or fix model
+        if self._last_submitted_prompt and not self.input_edit.toPlainText().strip():
+            self.input_edit.blockSignals(True)
+            try:
+                self.input_edit.setPlainText(self._last_submitted_prompt)
+                cursor = self.input_edit.textCursor()
+                cursor.movePosition(QtGui.QTextCursor.End)
+                self.input_edit.setTextCursor(cursor)
+            finally:
+                self.input_edit.blockSignals(False)
 
     @QtCore.Slot(object)
     def _on_main_thread_tool_request(self, req: ToolCallRequest):

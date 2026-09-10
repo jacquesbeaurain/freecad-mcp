@@ -6,6 +6,7 @@
 # streaming tokens to the UI and safely marshaling CAD tool executions
 # to FreeCAD's main GUI thread.
 
+import html
 import json
 import logging
 import os
@@ -22,6 +23,8 @@ import FreeCAD
 from .tool_bridge import DirectToolBridge
 
 logger = logging.getLogger("AICopilot.AgentWorker")
+
+FALLBACK_MODEL = "gemini-3.6-flash"
 
 SYSTEM_INSTRUCTION = """You are FreeCAD AI Copilot, an embedded assistant inside FreeCAD.
 Your role is to assist the user with 3D mechanical CAD modeling, parametric design, 2D sketching, CAM (Path) CNC toolpaths, Draft, and Spreadsheets.
@@ -210,16 +213,44 @@ class CopilotAgentWorker(QtCore.QThread):
             turn_done = False
             accumulated_response = ""
             max_turns = 10  # Guard against infinite tool recursion
+            active_model = self.model_name
 
             while not turn_done and max_turns > 0 and not self._stop_requested:
                 max_turns -= 1
 
-                # Generate content from model
-                response = client.models.generate_content(
-                    model=self.model_name,
-                    contents=self.history,
-                    config=config,
-                )
+                # Generate content from model with automatic 503 fallback
+                try:
+                    response = client.models.generate_content(
+                        model=active_model,
+                        contents=self.history,
+                        config=config,
+                    )
+                except Exception as gen_err:
+                    err_str = str(gen_err)
+                    is_503 = (
+                        "503" in err_str
+                        or "UNAVAILABLE" in err_str
+                        or "high demand" in err_str.lower()
+                    )
+                    if is_503 and active_model != FALLBACK_MODEL:
+                        logger.warning(
+                            f"Model {active_model} returned 503; falling back to {FALLBACK_MODEL}"
+                        )
+                        self.sig_status.emit(f"Model busy, falling back to {FALLBACK_MODEL}...")
+                        fallback_notice = (
+                            f"<div style='color: #e67e22; font-size: 11px; margin: 4px 0;'>"
+                            f"⚡ <i>Notice: <b>{html.escape(active_model)}</b> is currently experiencing high demand (503). "
+                            f"Automatically retrying via <b>{FALLBACK_MODEL}</b>...</i></div>"
+                        )
+                        self.sig_token.emit(fallback_notice)
+                        active_model = FALLBACK_MODEL
+                        response = client.models.generate_content(
+                            model=active_model,
+                            contents=self.history,
+                            config=config,
+                        )
+                    else:
+                        raise
 
                 candidate = response.candidates[0] if response.candidates else None
                 if not candidate:
@@ -290,6 +321,9 @@ class CopilotAgentWorker(QtCore.QThread):
 
         except Exception as exc:
             logger.exception(f"Error in Gemini agent turn: {exc}")
-            self.sig_error.emit(f"Agent Error: {exc}")
+            # If the turn failed, remove the dangling user turn so conversational history stays clean
+            if self.history and getattr(self.history[-1], "role", None) == "user":
+                self.history.pop()
+            self.sig_error.emit(str(exc))
             self.sig_status.emit("Error")
             self.sig_turn_complete.emit("")
