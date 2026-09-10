@@ -364,8 +364,36 @@ class CAMOpsHandler(BaseHandler):
             return self.log_and_return("adaptive", args, error=e, duration=time.time() - start_time)
 
     def face(self, args: Dict[str, Any]) -> str:
-        """Create a face milling operation."""
-        return self._placeholder_operation("Face Milling", args)
+        """Create a face milling operation (facing/surfacing top surfaces)."""
+        start_time = time.time()
+        try:
+            try:
+                from Path.Op.MillFace import Create as CreateMillFace
+            except ImportError:
+                try:
+                    import PathScripts.PathMillFace as m
+                    CreateMillFace = m.Create
+                except ImportError:
+                    return self._placeholder_operation("Face Milling", args)
+
+            doc, op = self._create_path_op(CreateMillFace, args, 'MillFace')
+
+            if 'stepover' in args and hasattr(op, 'StepOver'):
+                op.StepOver = args['stepover']
+            if 'stepdown' in args and hasattr(op, 'StepDown'):
+                try:
+                    op.setExpression('StepDown', None)
+                except Exception:
+                    pass
+                op.StepDown = args['stepdown']
+
+            self.recompute(doc)
+            faces = args.get('faces', [])
+            face_info = f"faces={faces}" if faces else "whole model / stock top"
+            result = f"Created MillFace operation '{op.Name}' in job '{args.get('job_name', 'Job')}' ({face_info})"
+            return self.log_and_return("face", args, result=result, duration=time.time() - start_time)
+        except Exception as e:
+            return self.log_and_return("face", args, error=e, duration=time.time() - start_time)
 
     def helix(self, args: Dict[str, Any]) -> str:
         """Create a helix operation."""
