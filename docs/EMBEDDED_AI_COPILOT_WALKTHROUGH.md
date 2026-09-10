@@ -38,6 +38,10 @@ The conversation history renders sequential turns with collapsible thought and w
 During multi-step execution, model busy (503) and rate limit (429) quota pauses display directly in the active turn card:
 ![Live Operational Notices](img/copilot_dock_live_stream.png)
 
+### Refined Theme-Adaptive Controls (Classic / Light Theme)
+Refined controls for Light and Classic themes with read-only syntax-styled multiline Python code boxes and structured, color-coded JSON result cards:
+![Refined Light Theme UI with Multiline Python and Color-Coded Results](img/copilot_refined_light_theme.png)
+
 ---
 
 ## 3. Git Commit History in `freecad-mcp`
@@ -62,6 +66,7 @@ The implementation was delivered across clean, well-documented commits following
 | [`6884882`](../../../commit/6884882) | `feat(copilotui): document atomic turn undo and 429 quota handling in user guide` | [`EMBEDDED_AI_COPILOT_GUIDE.md`](EMBEDDED_AI_COPILOT_GUIDE.md) |
 | [`28de92e`](../../../commit/28de92e) | `feat(copilotui): add embedded copilot walkthrough and visual verification to docs` | [`EMBEDDED_AI_COPILOT_WALKTHROUGH.md`](EMBEDDED_AI_COPILOT_WALKTHROUGH.md) |
 | [`177d534`](../../../commit/177d534) | `feat(copilotui): add collapsible thought and work sections with markdown summaries` | [`../AICopilot/ui/agent_worker.py`](../AICopilot/ui/agent_worker.py), [`../AICopilot/ui/dock_widget.py`](../AICopilot/ui/dock_widget.py), [`../tests/unit/test_copilot_dock_widget.py`](../tests/unit/test_copilot_dock_widget.py) |
+| [`4633547`](../../../commit/4633547) | `feat(copilotui): add multiline python controls, colored json cards, and light theme styling` | [`../AICopilot/ui/dock_widget.py`](../AICopilot/ui/dock_widget.py), [`../tests/unit/test_copilot_dock_widget.py`](../tests/unit/test_copilot_dock_widget.py), [`img/copilot_refined_light_theme.png`](img/copilot_refined_light_theme.png) |
 
 ---
 
@@ -180,3 +185,29 @@ To provide a modern, clean developer experience matching advanced AI coding envi
 4. **Self-Contained Turn Cards (`TurnCardWidget`)**:
    - Each conversational exchange is grouped into an independent turn card holding the user's prompt, selection badge, thought trace, work section, and response summary.
    - If an error occurs, a dedicated red error box renders directly within the turn card while preserving the prompt in the input edit for instant retry.
+
+
+---
+
+## 8. Refined Multiline Python Controls, JSON Cards & Theme Adaptation
+
+Following developer feedback on the conversation history experience, three major UI refinements were implemented to deliver an experience matching advanced IDE copilots:
+
+### 1. Multiline Formatted Code Control (`FormattedCodeBox`)
+- **Dedicated Read-Only Code Viewer**: When Gemini invokes `execute_python`, the Python code is displayed inside a custom `FormattedCodeBox` control rather than a single-line label.
+- **Dynamic Line-Aware Sizing**: Automatically computes height based on code line count (`min(max(lines * 17 + 14, 50), 200)`), expanding for readable viewing while bounding height with scrollbars for lengthy scripts.
+- **Syntax Header & Language Chip**: Renders an `⚡ Execute Python:` title alongside a styled `Python` badge in monospace font (`Consolas`, `'Courier New'`).
+
+### 2. Structured, Color-Coded JSON Result Cards (`FormattedResultCard`)
+- **Automatic JSON Categorization**: Unparses and validates JSON payloads from tool returns. Automatically distinguishes success payloads from error responses (checking `error`, `status == "error"`, `success is False`, or exception text).
+- **Green Success Cards (`✔ Result`)**: Renders tool results in soft green cards (`rgba(39, 174, 96, 0.08)`) with bulleted key-value rows for the top fields (e.g. `top_face`, `normal`, `area`), plus an overflow indicator (`... and n more fields`).
+- **Red Error Cards (`❌ Error`)**: Displays tool failures in high-visibility warning cards (`rgba(231, 76, 60, 0.08)`) with clear red borders and error details.
+- **Tool Attribution Chip**: Each card includes a subtle monospace badge denoting the executing tool (e.g. `spatial_query`, `sketch_operations`).
+
+### 3. Theme-Adaptive Styling (Classic & Light Themes)
+- **Automatic Lightness Detection (`is_dark_theme`)**: Probes `widget.palette()`, `FreeCADGui.getMainWindow().palette()`, and `QApplication.palette()` for background color lightness.
+- **Light/Classic Theme Contrast Fix**:
+  - Replaces harsh dark/black selection backgrounds with soft sky blue badges (`#1b4f72` text on `rgba(52, 152, 219, 0.12)` with `rgba(52, 152, 219, 0.4)` border).
+  - User prompt bubbles render in clean, subtle neutral backgrounds (`#1f2937` text on `rgba(0, 0, 0, 0.04)`).
+  - Collapsible toggle buttons and thought panels use soft translucent tints with clear hover states.
+  - Maintains sharp readability and visual separation across Dark, Classic, and Light FreeCAD themes.
