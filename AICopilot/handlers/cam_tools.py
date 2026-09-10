@@ -49,12 +49,12 @@ class CAMToolsHandler(BaseHandler):
             except ImportError:
                 return "Error: Path.Tool module not available. Requires FreeCAD 1.2+"
 
-            name = args.get('name', '')
-            tool_type = args.get('tool_type')
+            name = args.get('name') or args.get('tool_name') or 'Tool'
+            tool_type = args.get('tool_type') or args.get('shape') or args.get('type')
             if not tool_type:
                 return "Error: tool_type parameter required (e.g. 'endmill', 'ballend', 'drill')"
             diameter = args.get('diameter', 6.0)
-            flute_length = args.get('flute_length', None)
+            flute_length = args.get('flute_length') or args.get('cutting_edge_height', None)
             shank_diameter = args.get('shank_diameter', None)
             material = args.get('material', 'Carbide')
             number_of_flutes = args.get('number_of_flutes', None)
