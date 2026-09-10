@@ -287,3 +287,32 @@ During manual testing of "Make a 100mm cube", Gemini attempted post-creation ver
 Verified live in FreeCAD on both Part primitives and PartDesign Bodies:
 - Direct tool bridge execution of `measurement_operations` with `operation="bounding_box"` accurately reports bounding box coordinates:
   `Bounding box for Body: X: 0.00 to 100.00 mm (length: 100.00), Y: 0.00 to 100.00 mm (length: 100.00), Z: 0.00 to 100.00 mm (length: 100.00)`.
+
+
+---
+
+## 11. PartDesign Additive Primitives & Intelligent Dimension Defaulting
+
+### 1. Overview
+To deliver instantaneous 1-step solid creation and eliminate fragile sketch extrusions for basic geometry (such as "Make a 100mm cube"), native support for PartDesign additive primitives was integrated directly into `PartDesignOpsHandler` and `DirectToolBridge`.
+
+### 2. Implementation Details
+1. **PartDesign Additive Primitives (`AICopilot/handlers/partdesign_ops.py`)**:
+   - `create_body`: Creates and registers a `PartDesign::Body` in the active document.
+   - `additive_box`: Creates a `PartDesign::AdditiveBox` inside the active or specified Body. Automatically populates `width` and `height` from `length` (or `size`) for uniform cube requests.
+   - `additive_cylinder`: Creates a `PartDesign::AdditiveCylinder` with `radius` and `height`.
+   - `additive_sphere`: Creates a `PartDesign::AdditiveSphere` with `radius`.
+   - Automatic Body resolution via `_resolve_target_body`: uses existing body or auto-creates one if absent.
+2. **Part Primitives Dimension Defaulting (`AICopilot/handlers/primitives.py`)**:
+   - `create_box`: Supports `size` parameter and defaults `width` and `height` to `length` when omitted.
+3. **Tool Bridge & Schema Alignment (`AICopilot/ui/tool_bridge.py`)**:
+   - Exposed `create_body`, `additive_box`, `additive_cylinder`, `additive_sphere` with aliases (`box`, `cylinder`, `sphere`) in `DirectToolBridge`.
+   - Updated tool declaration schemas for Gemini function calling.
+4. **System Instruction Guidance (`AICopilot/ui/agent_worker.py`)**:
+   - Directs Gemini to invoke `partdesign_operations(operation="additive_box", length=100, width=100, height=100)` for PartDesign solids and `part_operations(operation="create_box", ...)` for Part CSG.
+
+### 3. Verification
+- **Automated Tests**: All 37 unit tests in `tests/unit/test_copilot_dock_widget.py`, all 39 tests in `test_primitives.py`, and all 92 tests in `test_partdesign_ops.py` pass.
+- **Live Verification**: Direct execution verified live in FreeCAD:
+  `Created AdditiveBox: Box (100.00x100.00x100.00mm) in Body: Body`
+  `Bounding box of Body: X: 0.00 to 100.00 mm, Y: 0.00 to 100.00 mm, Z: 0.00 to 100.00 mm`
