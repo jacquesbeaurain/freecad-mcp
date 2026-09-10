@@ -34,6 +34,8 @@ class SpatialOpsHandler(BaseHandler):
     _ALLOWED_OPERATIONS = frozenset({
         "interference_check", "clearance", "containment", "face_relationship",
         "batch_interference", "alignment_check", "contains_point",
+        "faces_by_normal", "top_face", "bottom_face", "horizontal_faces",
+        "vertical_faces", "list_faces", "query_faces",
     })
 
     # ------------------------------------------------------------------
@@ -558,3 +560,186 @@ class SpatialOpsHandler(BaseHandler):
 
         except Exception as e:
             return f"Error in alignment_check: {e}"
+
+    def _query_faces(self, args: Dict[str, Any], query_type: str) -> str:
+        """Find faces on an object matching spatial criteria: top_face, bottom_face, faces_by_normal, horizontal_faces, vertical_faces, list_faces."""
+        try:
+            object_name = args.get('object_name', '') or args.get('object1', '') or args.get('name', '') or args.get('obj1', '')
+            if not object_name:
+                return json.dumps({"error": "object_name is required for spatial face query"})
+
+            doc = self.get_document()
+            if not doc:
+                return json.dumps({"error": "No active document"})
+
+            obj = self.get_object(object_name, doc)
+            if not obj:
+                return json.dumps({"error": f"Object not found: {object_name}"})
+
+            # Check for Shape or Tip.Shape (PartDesign Body)
+            shape = None
+            if hasattr(obj, 'Shape') and obj.Shape and not obj.Shape.isNull():
+                shape = obj.Shape
+            elif hasattr(obj, 'Tip') and obj.Tip and hasattr(obj.Tip, 'Shape') and obj.Tip.Shape and not obj.Tip.Shape.isNull():
+                shape = obj.Tip.Shape
+
+            if shape is None or not hasattr(shape, 'Faces') or len(shape.Faces) == 0:
+                return json.dumps({
+                    "error": f"Object '{object_name}' has no faces or solid geometry yet. If this is an empty PartDesign Body, create a base feature (e.g. pad, revolution, or primitive) first.",
+                    "face_count": 0
+                })
+
+            faces = shape.Faces
+            face_records = []
+            for i, face in enumerate(faces):
+                face_name = f"Face{i + 1}"
+                try:
+                    u_mid = (face.ParameterRange[0] + face.ParameterRange[1]) / 2.0
+                    v_mid = (face.ParameterRange[2] + face.ParameterRange[3]) / 2.0
+                    n = face.normalAt(u_mid, v_mid)
+                except Exception:
+                    try:
+                        n = face.normalAt(0, 0)
+                    except Exception:
+                        n = None
+
+                norm_list = [round(n.x, 4), round(n.y, 4), round(n.z, 4)] if n else None
+                c = getattr(face, "CenterOfMass", None)
+                centroid_list = [round(c.x, 2), round(c.y, 2), round(c.z, 2)] if c else [0.0, 0.0, 0.0]
+                bb = getattr(face, "BoundBox", None)
+                z_max = round(bb.ZMax, 2) if bb else (centroid_list[2] if c else 0.0)
+                z_min = round(bb.ZMin, 2) if bb else (centroid_list[2] if c else 0.0)
+                z_center = centroid_list[2]
+
+                face_records.append({
+                    "face": face_name,
+                    "index": i + 1,
+                    "normal": norm_list,
+                    "centroid": centroid_list,
+                    "area": round(getattr(face, "Area", 0.0), 2),
+                    "z_max": z_max,
+                    "z_min": z_min,
+                    "z_center": z_center,
+                })
+
+            if query_type == "list_faces":
+                return json.dumps({
+                    "object": object_name,
+                    "total_faces": len(face_records),
+                    "faces": face_records
+                })
+
+            if query_type == "top_face":
+                upward = [f for f in face_records if f["normal"] and f["normal"][2] > 0.5]
+                if upward:
+                    best = max(upward, key=lambda f: (f["z_max"], f["z_center"], f["area"]))
+                else:
+                    best = max(face_records, key=lambda f: (f["z_max"], f["z_center"]))
+                return json.dumps({
+                    "query_type": "top_face",
+                    "object": object_name,
+                    "top_face": best["face"],
+                    "face": best["face"],
+                    "index": best["index"],
+                    "normal": best["normal"],
+                    "centroid": best["centroid"],
+                    "area": best["area"],
+                    "details": best
+                })
+
+            if query_type == "bottom_face":
+                downward = [f for f in face_records if f["normal"] and f["normal"][2] < -0.5]
+                if downward:
+                    best = min(downward, key=lambda f: (f["z_min"], f["z_center"], -f["area"]))
+                else:
+                    best = min(face_records, key=lambda f: (f["z_min"], f["z_center"]))
+                return json.dumps({
+                    "query_type": "bottom_face",
+                    "object": object_name,
+                    "bottom_face": best["face"],
+                    "face": best["face"],
+                    "index": best["index"],
+                    "normal": best["normal"],
+                    "centroid": best["centroid"],
+                    "area": best["area"],
+                    "details": best
+                })
+
+            if query_type == "horizontal_faces":
+                matched = [f for f in face_records if f["normal"] and abs(f["normal"][2]) > 0.85]
+                return json.dumps({
+                    "query_type": "horizontal_faces",
+                    "object": object_name,
+                    "count": len(matched),
+                    "faces": [f["face"] for f in matched],
+                    "details": matched
+                })
+
+            if query_type == "vertical_faces":
+                matched = [f for f in face_records if f["normal"] and abs(f["normal"][2]) < 0.15]
+                return json.dumps({
+                    "query_type": "vertical_faces",
+                    "object": object_name,
+                    "count": len(matched),
+                    "faces": [f["face"] for f in matched],
+                    "details": matched
+                })
+
+            if query_type == "faces_by_normal":
+                target = args.get("normal")
+                if not target or len(target) != 3:
+                    return json.dumps({"error": "normal vector [x, y, z] is required for faces_by_normal"})
+                t_mag = math.sqrt(target[0]**2 + target[1]**2 + target[2]**2)
+                if t_mag < 1e-6:
+                    return json.dumps({"error": "normal vector cannot be zero"})
+                tn = [target[0]/t_mag, target[1]/t_mag, target[2]/t_mag]
+
+                matched = []
+                for f in face_records:
+                    if f["normal"]:
+                        dot = f["normal"][0]*tn[0] + f["normal"][1]*tn[1] + f["normal"][2]*tn[2]
+                        if dot > 0.9:
+                            matched.append(f)
+                return json.dumps({
+                    "query_type": "faces_by_normal",
+                    "object": object_name,
+                    "target_normal": tn,
+                    "count": len(matched),
+                    "faces": [f["face"] for f in matched],
+                    "details": matched
+                })
+
+            return json.dumps({"error": f"Unknown spatial face query_type: {query_type}"})
+
+        except Exception as e:
+            return json.dumps({"error": f"Error in spatial face query: {e}"})
+
+    def top_face(self, args: Dict[str, Any]) -> str:
+        """Find the topmost face (e.g. for PartDesign pocket/pad/sketch attachment)."""
+        return self._query_faces(args, "top_face")
+
+    def bottom_face(self, args: Dict[str, Any]) -> str:
+        """Find the bottom-most face."""
+        return self._query_faces(args, "bottom_face")
+
+    def horizontal_faces(self, args: Dict[str, Any]) -> str:
+        """Find all horizontal faces (normal along +/- Z)."""
+        return self._query_faces(args, "horizontal_faces")
+
+    def vertical_faces(self, args: Dict[str, Any]) -> str:
+        """Find all vertical faces (normal perpendicular to Z)."""
+        return self._query_faces(args, "vertical_faces")
+
+    def faces_by_normal(self, args: Dict[str, Any]) -> str:
+        """Find faces matching a specified [x, y, z] normal vector."""
+        return self._query_faces(args, "faces_by_normal")
+
+    def list_faces(self, args: Dict[str, Any]) -> str:
+        """List all faces with normals, centroids, and areas."""
+        return self._query_faces(args, "list_faces")
+
+    def query_faces(self, args: Dict[str, Any]) -> str:
+        """Query faces by query_type: top_face, bottom_face, faces_by_normal, etc."""
+        q_type = args.get("query_type") or args.get("operation") or "top_face"
+        return self._query_faces(args, q_type)
+

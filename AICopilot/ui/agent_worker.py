@@ -201,6 +201,8 @@ class CopilotAgentWorker(QtCore.QThread):
                 tools=gemini_tools,
             )
 
+            history_start_len = len(self.history)
+
             # Append user message to history
             self.history.append(
                 types.Content(
@@ -304,10 +306,10 @@ class CopilotAgentWorker(QtCore.QThread):
                             )
                         )
 
-                    # Append tool responses to conversational history
+                    # Append tool responses to conversational history (Gemini API requires role="user")
                     self.history.append(
                         types.Content(
-                            role="tool",
+                            role="user",
                             parts=response_parts,
                         )
                     )
@@ -321,9 +323,9 @@ class CopilotAgentWorker(QtCore.QThread):
 
         except Exception as exc:
             logger.exception(f"Error in Gemini agent turn: {exc}")
-            # If the turn failed, remove the dangling user turn so conversational history stays clean
-            if self.history and getattr(self.history[-1], "role", None) == "user":
-                self.history.pop()
+            # If the turn failed, restore conversational history to before this turn started
+            if len(self.history) > history_start_len:
+                self.history = self.history[:history_start_len]
             self.sig_error.emit(str(exc))
             self.sig_status.emit("Error")
             self.sig_turn_complete.emit("")

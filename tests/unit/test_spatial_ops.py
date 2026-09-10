@@ -4,6 +4,7 @@ Tests all 6 spatial query operations with mocked FreeCAD modules.
 Run with: python3 -m pytest tests/unit/test_spatial_ops.py -v
 """
 
+import json
 import os
 import sys
 import math
@@ -739,6 +740,86 @@ class TestHelpers(unittest.TestCase):
         s1, s2, n1, err = h._get_two_shapes({'object1': 'A', 'object2': 'B'})
         self.assertIsNone(s1)
         self.assertIn("No active document", err)
+
+
+class TestFaceQueries(unittest.TestCase):
+    """Unit tests for spatial face query operations (top_face, bottom_face, etc.)."""
+
+    def setUp(self):
+        self.h = make_handler()
+        self.fc = spatial_ops_module.FreeCAD
+
+    def _make_face(self, normal_vec, z_val, area=100.0):
+        face = MagicMock()
+        face.normalAt.return_value = self.fc.Vector(*normal_vec)
+        face.CenterOfMass = self.fc.Vector(0.0, 0.0, z_val)
+        face.Area = area
+        bb = MagicMock()
+        bb.ZMax = z_val
+        bb.ZMin = z_val
+        face.BoundBox = bb
+        face.ParameterRange = [0.0, 1.0, 0.0, 1.0]
+        return face
+
+    def test_top_face_and_bottom_face(self):
+        # 6-sided box
+        f_bottom = self._make_face((0, 0, -1), 0.0)
+        f_top = self._make_face((0, 0, 1), 20.0)
+        f_front = self._make_face((0, -1, 0), 10.0)
+        f_back = self._make_face((0, 1, 0), 10.0)
+        f_left = self._make_face((-1, 0, 0), 10.0)
+        f_right = self._make_face((1, 0, 0), 10.0)
+
+        box = MagicMock()
+        box.Name = "TestBox"
+        box.Label = "TestBox"
+        box.Shape.isNull.return_value = False
+        box.Shape.Faces = [f_bottom, f_front, f_back, f_left, f_right, f_top]
+
+        doc = make_mock_doc([box])
+        self.fc.ActiveDocument = doc
+
+        # Top face: should pick f_top (index 6 -> Face6)
+        res_top = json.loads(self.h.top_face({"object_name": "TestBox"}))
+        self.assertEqual(res_top["top_face"], "Face6")
+        self.assertEqual(res_top["index"], 6)
+
+        # Bottom face: should pick f_bottom (index 1 -> Face1)
+        res_bottom = json.loads(self.h.bottom_face({"object_name": "TestBox"}))
+        self.assertEqual(res_bottom["bottom_face"], "Face1")
+        self.assertEqual(res_bottom["index"], 1)
+
+    def test_faces_by_normal(self):
+        f_top = self._make_face((0, 0, 1), 20.0)
+        f_side = self._make_face((1, 0, 0), 10.0)
+
+        obj = MagicMock()
+        obj.Name = "TestObj"
+        obj.Label = "TestObj"
+        obj.Shape.isNull.return_value = False
+        obj.Shape.Faces = [f_top, f_side]
+
+        doc = make_mock_doc([obj])
+        self.fc.ActiveDocument = doc
+
+        res = json.loads(self.h.faces_by_normal({"object_name": "TestObj", "normal": [0, 0, 1]}))
+        self.assertEqual(res["count"], 1)
+        self.assertEqual(res["faces"], ["Face1"])
+
+    def test_empty_shape_faces(self):
+        empty_body = MagicMock()
+        empty_body.Name = "Body"
+        empty_body.Label = "Body"
+        empty_body.Shape.Faces = []
+        empty_body.Tip = None
+
+        doc = make_mock_doc([empty_body])
+        self.fc.ActiveDocument = doc
+
+        res = json.loads(self.h.top_face({"object_name": "Body"}))
+        self.assertIn("error", res)
+        self.assertIn("has no faces", res["error"])
+        self.assertEqual(res["face_count"], 0)
 
 
 if __name__ == '__main__':

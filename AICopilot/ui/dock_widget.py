@@ -5,7 +5,9 @@
 # Embedded PySide DockWidget providing direct conversational interaction,
 # live 3D selection awareness, and in-memory CAD tool execution.
 
+import ast
 import html
+import json
 import logging
 import os
 import re
@@ -60,19 +62,48 @@ def format_user_friendly_error(error_input: Any) -> str:
     if "API Key is missing" in raw:
         return "Gemini API Key is missing. Please configure your key via the ⚙ Key button."
 
-    # Look for 'message': '...' or "message": "..." in JSON/dict strings
-    msg_match = re.search(r"['\"]message['\"]\s*:\s*['\"]([^'\"]+)['\"]", raw)
+    # First attempt: parse python/JSON dict if present
+    dict_match = re.search(r"(\{.*\})", raw, re.DOTALL)
+    if dict_match:
+        dict_str = dict_match.group(1).strip()
+        parsed_dict = None
+        try:
+            parsed_dict = json.loads(dict_str)
+        except Exception:
+            try:
+                parsed_dict = ast.literal_eval(dict_str)
+            except Exception:
+                pass
+
+        if isinstance(parsed_dict, dict):
+            err_obj = parsed_dict.get("error", parsed_dict)
+            if isinstance(err_obj, dict) and "message" in err_obj:
+                msg = str(err_obj["message"]).strip()
+                err_code = err_obj.get("code", code)
+                if err_code == 503:
+                    return f"Model Busy (503): {msg}"
+                elif err_code == 404:
+                    return f"Model Unavailable (404): {msg}"
+                elif err_code == 429:
+                    return f"Rate Limit Exceeded (429): {msg}"
+                elif err_code:
+                    return f"API Error ({err_code}): {msg}"
+                return msg
+
+    # Second attempt: Regex matching either double-quoted or single-quoted string
+    msg_match = re.search(r"""['"]message['"]\s*:\s*(?:"((?:\\"|[^"])*)"|'((?:\\'|[^'])*)')""", raw)
     if msg_match:
-        extracted = msg_match.group(1).strip()
-        if code == 503:
-            return f"Model Busy (503): {extracted}"
-        elif code == 404:
-            return f"Model Unavailable (404): {extracted}"
-        elif code == 429:
-            return f"Rate Limit Exceeded (429): {extracted}"
-        elif code:
-            return f"API Error ({code}): {extracted}"
-        return extracted
+        extracted = (msg_match.group(1) or msg_match.group(2) or "").strip()
+        if extracted:
+            if code == 503:
+                return f"Model Busy (503): {extracted}"
+            elif code == 404:
+                return f"Model Unavailable (404): {extracted}"
+            elif code == 429:
+                return f"Rate Limit Exceeded (429): {extracted}"
+            elif code:
+                return f"API Error ({code}): {extracted}"
+            return extracted
 
     # Strip prefixes like google.genai.errors.ServerError: or Agent Error:
     cleaned = re.sub(r"^(google\.genai\.errors\.\w+:\s*|Agent Error:\s*)+", "", raw)
@@ -518,7 +549,8 @@ class AICopilotDockWidget(QtWidgets.QDockWidget):
         self._last_submitted_prompt = None
         self.btn_send.setEnabled(True)
         self.btn_stop.setEnabled(False)
-        self.status_label.setText("Ready")
+        if not self.error_frame.isVisible():
+            self.status_label.setText("Ready")
         self._current_assistant_buffer = ""
         self._append_html("<hr style='border: none; border-top: 1px solid palette(mid); margin: 8px 0;'>")
 

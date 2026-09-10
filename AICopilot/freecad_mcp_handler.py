@@ -1649,6 +1649,7 @@ class FreeCADSocketServer:
             "add_polygon": self.sketch_ops.add_polygon,
             "add_slot": self.sketch_ops.add_slot,
             "add_fillet": self.sketch_ops.add_fillet,
+            "add_geometry": self.sketch_ops.add_geometry,
             # Constraints
             "add_constraint": self.sketch_ops.add_constraint,
             "delete_constraint": self.sketch_ops.delete_constraint,

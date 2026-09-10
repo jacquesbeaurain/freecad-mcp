@@ -122,6 +122,11 @@ class DirectToolBridge:
     def _dispatch_direct(self, server, tool_name: str, args: Dict[str, Any]) -> str:
         """Invokes modular CAD handlers directly and synchronously on FreeCAD's GUI thread."""
         op = args.get("operation", "")
+        if tool_name == "spatial_query":
+            if not op:
+                op = args.get("query_type", "")
+            if not op and "normal" in args:
+                op = "faces_by_normal"
 
         try:
             if tool_name == "partdesign_operations":
@@ -227,7 +232,11 @@ class DirectToolBridge:
                 res = fn(args)
 
             elif tool_name == "execute_python":
-                res = server.execute_python_ops.execute(args)
+                code = args.get("code", "")
+                if hasattr(server.execute_python_ops, "run_code"):
+                    res = server.execute_python_ops.run_code(code)
+                else:
+                    res = server.execute_python_ops.execute(args)
 
             elif tool_name == "build_sketch":
                 res = server.sketch_builder_ops.build_sketch(args)
@@ -280,11 +289,11 @@ class DirectToolBridge:
                     "properties": {
                         "operation": {
                             "type": "string",
-                            "enum": ["create_sketch", "add_geometry", "add_constraint", "get_sketch", "solve_sketch"],
+                            "enum": ["create_sketch", "add_geometry", "add_line", "add_circle", "add_rectangle", "add_arc", "add_polygon", "add_slot", "add_constraint", "get_sketch", "solve_sketch"],
                             "description": "Sketch operation to perform"
                         },
                         "sketch_name": {"type": "string", "description": "Name of sketch"},
-                        "plane": {"type": "string", "description": "Attachment plane: XY_Plane, XZ_Plane, YZ_Plane"},
+                        "plane": {"type": "string", "description": "Attachment plane: 'XY', 'XZ', or 'YZ' (or 'XY_Plane', 'XZ_Plane', 'YZ_Plane')"},
                         "body_name": {"type": "string", "description": "Parent PartDesign body to attach sketch to"},
                         "geometry_type": {"type": "string", "enum": ["Line", "Circle", "Arc", "Rectangle"], "description": "Geometry type to add"},
                         "parameters": {"type": "object", "description": "Geometry parameters (e.g. start/end points, radius)"},
@@ -399,19 +408,29 @@ class DirectToolBridge:
             },
             {
                 "name": "spatial_query",
-                "description": "Query geometry elements by spatial attributes: find faces by normal vector, find highest/lowest faces, find edges by length.",
+                "description": "Analyze spatial relationships or query geometry elements: find top/bottom face, find faces by normal vector, list faces, interference/clearance/containment check.",
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "object_name": {"type": "string", "description": "Target object name"},
+                        "operation": {
+                            "type": "string",
+                            "enum": [
+                                "top_face", "bottom_face", "faces_by_normal", "horizontal_faces", "vertical_faces", "list_faces",
+                                "interference_check", "clearance", "containment", "contains_point", "face_relationship", "batch_interference", "alignment_check"
+                            ],
+                            "description": "Spatial operation or face query to perform"
+                        },
                         "query_type": {
                             "type": "string",
-                            "enum": ["faces_by_normal", "top_face", "bottom_face", "horizontal_faces", "vertical_faces"],
-                            "description": "Type of spatial query"
+                            "enum": ["top_face", "bottom_face", "faces_by_normal", "horizontal_faces", "vertical_faces", "list_faces"],
+                            "description": "Alias for operation (e.g. top_face, bottom_face, horizontal_faces)"
                         },
-                        "normal": {"type": "array", "items": {"type": "number"}, "description": "Normal vector [x, y, z] to match"}
+                        "object_name": {"type": "string", "description": "Target object name (e.g. 'Body' or 'Box')"},
+                        "normal": {"type": "array", "items": {"type": "number"}, "description": "Normal vector [x, y, z] to match (for faces_by_normal)"},
+                        "object1": {"type": "string", "description": "First object for interference/clearance"},
+                        "object2": {"type": "string", "description": "Second object for interference/clearance"}
                     },
-                    "required": ["object_name", "query_type"]
+                    "required": ["object_name"]
                 }
             },
             {

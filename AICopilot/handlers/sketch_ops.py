@@ -30,14 +30,9 @@ class SketchOpsHandler(BaseHandler):
                 'XZ': (1, 0, 0, 1),
                 'YZ': (0, 1, 0, 1),
             }
-            rotation_args = plane_rotations.get(plane.upper())
+            clean_plane = plane.upper().replace("_PLANE", "").replace("-PLANE", "").replace("PLANE", "").strip()
+            rotation_args = plane_rotations.get(clean_plane)
             if rotation_args is None:
-                # Validated before creating the object — an unrecognized
-                # plane used to leave sketch.Placement at doc.addObject's
-                # default (identical to the XY branch) while still
-                # reporting "Created sketch: ... on {plane} plane" as
-                # success, e.g. plane="ZY" silently creating an
-                # XY-oriented sketch labeled "on ZY plane".
                 return f"Error creating sketch: invalid plane '{plane}' — must be 'XY', 'XZ', or 'YZ'"
 
             # Create sketch
@@ -195,6 +190,35 @@ class SketchOpsHandler(BaseHandler):
     # -----------------------------------------------------------------
     # Geometry: lines, circles, rectangles, arcs, polygons, slots
     # -----------------------------------------------------------------
+
+    def add_geometry(self, args: Dict[str, Any]) -> str:
+        """Add geometry to sketch by geometry_type (Line, Circle, Arc, Rectangle, Polygon, Slot)."""
+        geo_type = (args.get('geometry_type') or '').lower()
+        params = args.get('parameters') or {}
+        if isinstance(params, dict):
+            for k, v in params.items():
+                args.setdefault(k, v)
+
+        if geo_type == 'rectangle':
+            if 'x1' in args and 'x2' in args:
+                args.setdefault('x', min(args['x1'], args['x2']))
+                args.setdefault('width', abs(args['x2'] - args['x1']))
+            if 'y1' in args and 'y2' in args:
+                args.setdefault('y', min(args['y1'], args['y2']))
+                args.setdefault('height', abs(args['y2'] - args['y1']))
+            return self.add_rectangle(args)
+        elif geo_type == 'circle':
+            return self.add_circle(args)
+        elif geo_type == 'line':
+            return self.add_line(args)
+        elif geo_type == 'arc':
+            return self.add_arc(args)
+        elif geo_type == 'polygon':
+            return self.add_polygon(args)
+        elif geo_type == 'slot':
+            return self.add_slot(args)
+        else:
+            return f"Unknown geometry_type: {geo_type}. Supported: Rectangle, Circle, Line, Arc, Polygon, Slot"
 
     def add_line(self, args: Dict[str, Any]) -> str:
         """Add a line to a sketch."""

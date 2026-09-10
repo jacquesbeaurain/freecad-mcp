@@ -226,5 +226,116 @@ def test_dock_widget_error_handling_and_prompt_retention():
     assert "{'error':" not in mock_widget.error_label.setText.call_args[0][0]
 
 
+def test_format_user_friendly_error_internal_quotes():
+    from AICopilot.ui.dock_widget import format_user_friendly_error
+
+    raw_400 = (
+        "Agent Error: 400 INVALID_ARGUMENT. {'error': {'code': 400, 'message': "
+        "\"Role 'tool' is not supported. Please use a valid role: SYSTEM, USER, MODEL.\", 'status': 'INVALID_ARGUMENT'}}"
+    )
+    res_400 = format_user_friendly_error(raw_400)
+    assert "API Error (400)" in res_400
+    assert "Role 'tool' is not supported" in res_400
+    assert res_400 != "Role"
+    assert "{'error':" not in res_400
+
+
+def test_copilot_agent_worker_function_response_role_user(monkeypatch):
+    from AICopilot.ui.agent_worker import CopilotAgentWorker
+
+    worker = CopilotAgentWorker(tool_bridge=MagicMock())
+    worker.api_key = "fake-key"
+
+    fake_client = MagicMock()
+    call_count = 0
+
+    def fake_generate_content(model, contents, config):
+        nonlocal call_count
+        call_count += 1
+        mock_resp = MagicMock()
+        mock_cand = MagicMock()
+        mock_part = MagicMock()
+
+        if call_count == 1:
+            mock_call = MagicMock()
+            mock_call.name = "spatial_query"
+            mock_call.args = {"query_type": "top_face", "object_name": "Body"}
+            mock_part.text = None
+            mock_part.function_call = mock_call
+        else:
+            mock_part.text = "The top face is Face6"
+            mock_part.function_call = None
+
+        mock_cand.content = MagicMock()
+        mock_cand.content.parts = [mock_part]
+        mock_resp.candidates = [mock_cand]
+        return mock_resp
+
+    fake_client.models.generate_content.side_effect = fake_generate_content
+
+    fake_genai = MagicMock()
+    fake_genai.Client.return_value = fake_client
+
+    class FakeContent:
+        def __init__(self, role, parts):
+            self.role = role
+            self.parts = parts
+
+    class FakePart:
+        @staticmethod
+        def from_text(text):
+            return text
+
+        @staticmethod
+        def from_function_response(name, response):
+            return {"name": name, "response": response}
+
+    fake_types = MagicMock()
+    fake_types.Content = FakeContent
+    fake_types.Part = FakePart
+    fake_genai.types = fake_types
+
+    import google
+
+    monkeypatch.setitem(sys.modules, "google.genai", fake_genai)
+    monkeypatch.setitem(sys.modules, "google.genai.types", fake_types)
+    monkeypatch.setattr(google, "genai", fake_genai, raising=False)
+
+    # Wire signal to immediately fulfill main thread tool request
+    worker.sig_request_main_thread_tool.connect(lambda req: req.set_result('{"face": "Face6"}'))
+
+    worker._process_task({"prompt": "Find top face", "selection": None})
+
+    # Verify history contains function response with role="user"
+    assert len(worker.history) >= 3
+    tool_resp_content = worker.history[2]
+    assert getattr(tool_resp_content, "role", None) == "user"
+
+
+def test_direct_tool_bridge_spatial_query_dispatch(mock_freecad):
+    import AICopilot.ui.tool_bridge as tb
+
+    doc = MagicMock()
+    mock_freecad.ActiveDocument = doc
+    tb.FreeCAD.ActiveDocument = doc
+
+    fake_server = MagicMock()
+    fake_server.spatial_ops.top_face.return_value = json.dumps({"top_face": "Face6"})
+
+    bridge = tb.DirectToolBridge(server=fake_server)
+
+    # 1. Dispatch via query_type
+    res1 = bridge.execute_tool("spatial_query", {"query_type": "top_face", "object_name": "Body"})
+    fake_server.spatial_ops.top_face.assert_called_once()
+    assert json.loads(res1)["top_face"] == "Face6"
+
+    # 2. Dispatch via operation
+    fake_server.spatial_ops.top_face.reset_mock()
+    res2 = bridge.execute_tool("spatial_query", {"operation": "top_face", "object_name": "Body"})
+    fake_server.spatial_ops.top_face.assert_called_once()
+    assert json.loads(res2)["top_face"] == "Face6"
+
+
+
 
 
