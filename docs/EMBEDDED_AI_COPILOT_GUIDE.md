@@ -35,6 +35,11 @@ The **Embedded AI Copilot** is a native FreeCAD dock panel that integrates Googl
    - Editable model selector allows typing or pasting any custom/preview model ID.
    - Automatic dynamic model discovery queries available models from your API key upon startup and key update.
 
+6. **Smart Error Handling & Prompt Retention**:
+   - **Dismissible Error Banner**: Displays clean, formatted error messages above the input box (stripping ugly JSON and nested dictionaries). Dismisses automatically on model change, dropdown selection, typing, or clicking `✕`.
+   - **Zero-Retype Prompt Retention**: On any API error (such as 404 model not found or quota limits), the prompt is preserved in the input box so you can change the model and immediately retry.
+   - **Automatic 503 Fallback**: If a selected preview model (e.g. `gemini-3.8-flash`) experiences peak-demand shedding (HTTP 503), the worker automatically completes the request using `gemini-3.6-flash` and reports an inline note.
+
 ---
 
 ## User Interface Walkthrough
@@ -60,6 +65,8 @@ The **Embedded AI Copilot** is a native FreeCAD dock panel that integrates Googl
 │                                                        │
 ├────────────────────────────────────────────────────────┤
 │ Ready                                                  │
+├────────────────────────────────────────────────────────┤
+│ ⚠️ [Model Busy (503): High demand...]              [✕] │
 ├────────────────────────────────────────────────────────┤
 │ [ Type CAD request or question (Enter to send)...    ] │
 │                                          [➤ Send] [⏹]  │
