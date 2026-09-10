@@ -5,6 +5,36 @@ import time
 from typing import Dict, Any
 from .base import BaseHandler
 
+try:
+    from ..compat_pathscripts import (
+        get_op_create,
+        get_job_create,
+        get_stock_factories,
+        get_job_viewprovider,
+    )
+except Exception:
+    try:
+        from compat_pathscripts import (
+            get_op_create,
+            get_job_create,
+            get_stock_factories,
+            get_job_viewprovider,
+        )
+    except Exception:
+        def get_op_create(name):
+            import importlib
+            return importlib.import_module(f"Path.Op.{name.capitalize()}").Create
+        def get_job_create():
+            import importlib
+            return importlib.import_module("Path.Main.Job").Create
+        def get_stock_factories():
+            import importlib
+            m = importlib.import_module("Path.Main.Stock")
+            return m.CreateBox, getattr(m, "CreateCylinder", None), getattr(m, "CreateFromBase", None)
+        def get_job_viewprovider():
+            import importlib
+            return getattr(importlib.import_module("Path.Main.Gui.Job"), "ViewProvider", None)
+
 
 class CAMOpsHandler(BaseHandler):
     """Handler for CAM (Path) workbench operations."""
@@ -24,23 +54,12 @@ class CAMOpsHandler(BaseHandler):
         """Create a new CAM Job."""
         start_time = time.time()
         try:
-            # FreeCAD 1.0+ uses new module structure
-            from Path.Main.Job import Create as CreateJob
-            # Path.Main.Gui.Job pulls in FreeCADGui/Coin3D as a side effect
-            # of a successful import, regardless of whether the ImportError
-            # guard below ever fires -- checking FreeCAD.GuiUp first avoids
-            # even attempting the import in headless mode. Unconditionally
-            # importing FreeCADGui in headless mode can SIGSEGV on FreeCAD
-            # weekly builds from 2026-07-09 onward (a symbol collision
-            # between Coin's bundled expat and Python's own -- see
-            # KNOWN_ISSUES.md "CAM Tool Creation").
+            CreateJob = get_job_create()
             has_gui = False
+            ViewProvider = None
             if FreeCAD.GuiUp:
-                try:
-                    from Path.Main.Gui.Job import ViewProvider
-                    has_gui = True
-                except ImportError:
-                    has_gui = False
+                ViewProvider = get_job_viewprovider()
+                has_gui = ViewProvider is not None
 
             doc = self.get_document()
             if not doc:
@@ -137,8 +156,7 @@ class CAMOpsHandler(BaseHandler):
         """Setup stock for CAM job."""
         start_time = time.time()
         try:
-            # FreeCAD 1.0+ uses new module structure
-            from Path.Main.Stock import CreateBox, CreateCylinder, CreateFromBase
+            CreateBox, CreateCylinder, CreateFromBase = get_stock_factories()
 
             doc = self.get_document()
             if not doc:
@@ -209,12 +227,7 @@ class CAMOpsHandler(BaseHandler):
         """
         start_time = time.time()
         try:
-            try:
-                from Path.Op.Profile import Create as CreateProfile
-            except ImportError:
-                import PathScripts.PathProfile as m
-                CreateProfile = m.Create
-
+            CreateProfile = get_op_create('profile')
             doc, op = self._create_path_op(CreateProfile, args, 'Profile')
 
             if hasattr(op, 'Side'):
@@ -253,12 +266,7 @@ class CAMOpsHandler(BaseHandler):
                 )
                 return self.log_and_return("pocket", args, error=error, duration=time.time() - start_time)
 
-            try:
-                from Path.Op.Pocket import Create as CreatePocket
-            except ImportError:
-                import PathScripts.PathPocket as m
-                CreatePocket = m.Create
-
+            CreatePocket = get_op_create('pocket')
             doc, op = self._create_path_op(CreatePocket, args, 'Pocket')
 
             if 'stepover' in args and hasattr(op, 'StepOver'):
@@ -281,12 +289,7 @@ class CAMOpsHandler(BaseHandler):
         """
         start_time = time.time()
         try:
-            try:
-                from Path.Op.Drilling import Create as CreateDrilling
-            except ImportError:
-                import PathScripts.PathDrilling as m
-                CreateDrilling = m.Create
-
+            CreateDrilling = get_op_create('drilling')
             doc, op = self._create_path_op(CreateDrilling, args, 'Drilling')
 
             if 'depth' in args and hasattr(op, 'FinalDepth'):
@@ -341,12 +344,7 @@ class CAMOpsHandler(BaseHandler):
                 )
                 return self.log_and_return("adaptive", args, error=error, duration=time.time() - start_time)
 
-            try:
-                from Path.Op.Adaptive import Create as CreateAdaptive
-            except ImportError:
-                import PathScripts.PathAdaptive as m
-                CreateAdaptive = m.Create
-
+            CreateAdaptive = get_op_create('adaptive')
             doc, op = self._create_path_op(CreateAdaptive, args, 'Adaptive')
 
             if 'stepover' in args and hasattr(op, 'StepOverPercent'):
@@ -368,13 +366,9 @@ class CAMOpsHandler(BaseHandler):
         start_time = time.time()
         try:
             try:
-                from Path.Op.MillFace import Create as CreateMillFace
+                CreateMillFace = get_op_create('face')
             except ImportError:
-                try:
-                    import PathScripts.PathMillFace as m
-                    CreateMillFace = m.Create
-                except ImportError:
-                    return self._placeholder_operation("Face Milling", args)
+                return self._placeholder_operation("Face Milling", args)
 
             doc, op = self._create_path_op(CreateMillFace, args, 'MillFace')
 
@@ -420,13 +414,9 @@ class CAMOpsHandler(BaseHandler):
         start_time = time.time()
         try:
             try:
-                from Path.Op.Surface import Create as CreateSurface
+                CreateSurface = get_op_create('surface')
             except ImportError:
-                try:
-                    import PathScripts.PathSurface as m
-                    CreateSurface = m.Create
-                except ImportError:
-                    return self._placeholder_operation("Surface Milling", args)
+                return self._placeholder_operation("Surface Milling", args)
 
             doc, op = self._create_path_op(CreateSurface, args, 'Surface')
 

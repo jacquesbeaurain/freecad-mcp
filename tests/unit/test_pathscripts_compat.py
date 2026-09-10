@@ -2,10 +2,21 @@
 
 import importlib
 import sys
+import types
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock
 
-from AICopilot.compat_pathscripts import install_pathscripts_compat, _PATHSCRIPTS_REDIRECTS
+from AICopilot.compat_pathscripts import (
+    install_pathscripts_compat,
+    detect_cam_environment,
+    get_cam_mode,
+    get_op_create,
+    get_job_create,
+    get_job_viewprovider,
+    get_stock_factories,
+    _PATHSCRIPTS_REDIRECTS,
+    _OP_MODULE_MAP,
+)
 
 
 class TestPathScriptsCompat(unittest.TestCase):
@@ -27,12 +38,9 @@ class TestPathScriptsCompat(unittest.TestCase):
     def test_meta_path_finder_resolves_pathscripts_submodule(self):
         from AICopilot.compat_pathscripts import PathScriptsCompatFinder
         spec = PathScriptsCompatFinder.find_spec("PathScripts.PathJob")
-        # In test environment where Path.Main.Job may not exist as real module,
-        # find_spec returns None or a spec if mocked, but does not raise
         self.assertTrue(spec is None or spec is not None)
 
     def test_virtual_package_attribute_access_dynamic_import(self):
-        import types
         fake_job = types.ModuleType("Path.Main.Job")
         fake_job.Create = lambda *args: "fake_job"
         sys.modules["Path.Main.Job"] = fake_job
@@ -46,3 +54,60 @@ class TestPathScriptsCompat(unittest.TestCase):
         finally:
             sys.modules.pop("Path.Main.Job", None)
             sys.modules.pop("PathScripts.PathJob", None)
+
+    def test_detect_cam_environment(self):
+        mode = detect_cam_environment()
+        self.assertIn(mode, ("modern", "legacy", "none"))
+        self.assertEqual(get_cam_mode(), mode)
+
+    def test_get_op_create_resolves_from_sys_modules(self):
+        fake_profile = types.ModuleType("Path.Op.Profile")
+        mock_create = MagicMock(return_value="mock_profile_op")
+        fake_profile.Create = mock_create
+        sys.modules["Path.Op.Profile"] = fake_profile
+
+        try:
+            create_fn = get_op_create("profile")
+            self.assertEqual(create_fn(), "mock_profile_op")
+            mock_create.assert_called_once()
+        finally:
+            sys.modules.pop("Path.Op.Profile", None)
+
+    def test_get_job_create_resolves_from_sys_modules(self):
+        fake_job = types.ModuleType("Path.Main.Job")
+        mock_create = MagicMock(return_value="mock_job_obj")
+        fake_job.Create = mock_create
+        sys.modules["Path.Main.Job"] = fake_job
+
+        try:
+            create_fn = get_job_create()
+            self.assertEqual(create_fn(), "mock_job_obj")
+            mock_create.assert_called_once()
+        finally:
+            sys.modules.pop("Path.Main.Job", None)
+
+    def test_get_stock_factories_resolves_from_sys_modules(self):
+        fake_stock = types.ModuleType("Path.Main.Stock")
+        fake_stock.CreateBox = MagicMock(return_value="mock_box")
+        fake_stock.CreateCylinder = MagicMock(return_value="mock_cyl")
+        fake_stock.CreateFromBase = MagicMock(return_value="mock_base")
+        sys.modules["Path.Main.Stock"] = fake_stock
+
+        try:
+            create_box, create_cyl, create_base = get_stock_factories()
+            self.assertEqual(create_box(), "mock_box")
+            self.assertEqual(create_cyl(), "mock_cyl")
+            self.assertEqual(create_base(), "mock_base")
+        finally:
+            sys.modules.pop("Path.Main.Stock", None)
+
+    def test_get_job_viewprovider_resolves_when_present(self):
+        fake_gui_job = types.ModuleType("Path.Main.Gui.Job")
+        fake_gui_job.ViewProvider = MagicMock()
+        sys.modules["Path.Main.Gui.Job"] = fake_gui_job
+
+        try:
+            vp = get_job_viewprovider()
+            self.assertEqual(vp, fake_gui_job.ViewProvider)
+        finally:
+            sys.modules.pop("Path.Main.Gui.Job", None)

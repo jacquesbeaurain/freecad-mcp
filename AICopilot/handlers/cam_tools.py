@@ -54,7 +54,7 @@ class CAMToolsHandler(BaseHandler):
             if not tool_type:
                 return "Error: tool_type parameter required (e.g. 'endmill', 'ballend', 'drill')"
             diameter = args.get('diameter', 6.0)
-            flute_length = args.get('flute_length') or args.get('cutting_edge_height', None)
+            flute_length = args.get('flute_length') if args.get('flute_length') is not None else args.get('cutting_edge_height', None)
             shank_diameter = args.get('shank_diameter', None)
             material = args.get('material', 'Carbide')
             number_of_flutes = args.get('number_of_flutes', None)

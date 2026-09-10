@@ -38,7 +38,8 @@ if mod_dir and mod_dir not in sys.path:
 
 try:
     from compat_pathscripts import install_pathscripts_compat
-    install_pathscripts_compat()
+    cam_mode = install_pathscripts_compat()
+    FreeCAD.Console.PrintMessage(f"AICopilot: CAM environment detected ({cam_mode}), PathScripts compat bridge ready.\n")
 except Exception as e:
     FreeCAD.Console.PrintWarning(f"AICopilot: PathScripts compat setup: {e}\n")
 
