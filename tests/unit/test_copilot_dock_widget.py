@@ -597,3 +597,64 @@ def test_chat_stream_widget():
 
     stream.clear()
     assert stream.layout.count() == 1  # only stretch remains
+
+
+def test_formatted_code_box():
+    from AICopilot.ui.dock_widget import FormattedCodeBox
+
+    code = "import FreeCAD\ndoc = FreeCAD.newDocument()\ndoc.recompute()"
+    box = FormattedCodeBox(code)
+    box.show()
+    assert "import FreeCAD" in box.code_edit.toPlainText()
+    assert box.code_edit.isReadOnly() is True
+    assert box.code_edit.height() >= 50
+
+
+def test_formatted_result_card_success():
+    from PySide6 import QtWidgets
+    from AICopilot.ui.dock_widget import FormattedResultCard
+
+    raw_json = '{"top_face": "Face6", "normal": [0.0, 0.0, 1.0], "area": 1600.0}'
+    card = FormattedResultCard("spatial_query", raw_json)
+    card.show()
+    # Check that Result is rendered and not Error
+    labels = card.findChildren(QtWidgets.QLabel)
+    assert any("Result" in l.text() for l in labels)
+
+
+def test_formatted_result_card_error():
+    from PySide6 import QtWidgets
+    from AICopilot.ui.dock_widget import FormattedResultCard
+
+    raw_err = '{"error": "Sketch not on face", "status": "error", "code": 400}'
+    card = FormattedResultCard("sketch_operations", raw_err)
+    card.show()
+    labels = card.findChildren(QtWidgets.QLabel)
+    assert any("Error" in l.text() for l in labels)
+
+
+def test_work_section_execute_python_multiline():
+    from AICopilot.ui.dock_widget import WorkSection, FormattedCodeBox
+
+    ws = WorkSection()
+    ws.show()
+    py_code = "box = Part.makeBox(10, 10, 10)\nPart.show(box)"
+    ws.add_tool_call("execute_python", {"code": py_code})
+    assert ws._tool_count == 1
+
+    # Should have instantiated FormattedCodeBox inside content_layout
+    boxes = ws.content_frame.findChildren(FormattedCodeBox)
+    assert len(boxes) == 1
+    assert "makeBox" in boxes[0].code_edit.toPlainText()
+
+
+def test_theme_palette_keys():
+    from AICopilot.ui.dock_widget import get_theme_palette
+
+    pal = get_theme_palette()
+    assert "badge_sel_bg" in pal
+    assert "badge_none_bg" in pal
+    assert "user_box_bg" in pal
+    assert "code_bg" in pal
+    assert "res_success_bg" in pal
+    assert "res_err_bg" in pal

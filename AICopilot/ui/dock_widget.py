@@ -4,7 +4,8 @@
 #
 # Embedded PySide DockWidget providing direct conversational interaction,
 # live 3D selection awareness, collapsible thought/work sections,
-# and in-memory CAD tool execution.
+# multiline Python code execution controls, color-coded structured JSON results,
+# and light/dark theme adaptive styling.
 
 import ast
 import html
@@ -42,6 +43,96 @@ DEFAULT_GEMINI_MODELS = [
     "gemini-flash-latest",
     "gemini-pro-latest",
 ]
+
+
+def is_dark_theme(widget: Optional[QtWidgets.QWidget] = None) -> bool:
+    """Detect whether FreeCAD or the active widget is currently running in a dark theme."""
+    try:
+        if widget and hasattr(widget, "palette"):
+            val = widget.palette().color(QtGui.QPalette.Window).lightness()
+            if isinstance(val, (int, float)):
+                return val < 128
+        if FreeCADGui and FreeCAD.GuiUp and hasattr(FreeCADGui, "getMainWindow"):
+            mw = FreeCADGui.getMainWindow()
+            if mw and hasattr(mw, "palette"):
+                val = mw.palette().color(QtGui.QPalette.Window).lightness()
+                if isinstance(val, (int, float)):
+                    return val < 128
+        app = QtWidgets.QApplication.instance()
+        if app and hasattr(app, "palette"):
+            val = app.palette().color(QtGui.QPalette.Window).lightness()
+            if isinstance(val, (int, float)):
+                return val < 128
+    except Exception:
+        pass
+    return False
+
+
+def get_theme_palette(widget: Optional[QtWidgets.QWidget] = None) -> dict:
+    """Return theme-adaptive color tokens matching Classic, Light, and Dark themes cleanly."""
+    dark = is_dark_theme(widget)
+    if dark:
+        return {
+            "dark": True,
+            "badge_sel_bg": "rgba(41, 128, 185, 0.25)",
+            "badge_sel_border": "#2980b9",
+            "badge_sel_fg": "#8ec5fc",
+            "badge_none_bg": "rgba(255, 255, 255, 0.05)",
+            "badge_none_border": "rgba(255, 255, 255, 0.1)",
+            "badge_none_fg": "#888888",
+            "user_box_bg": "rgba(255, 255, 255, 0.05)",
+            "user_box_border": "rgba(255, 255, 255, 0.08)",
+            "user_box_fg": "#e2e8f0",
+            "user_sel_fg": "#54a0ff",
+            "btn_toggle_fg": "#a0aec0",
+            "btn_toggle_bg": "rgba(255, 255, 255, 0.06)",
+            "btn_toggle_hover": "#edf2f7",
+            "code_bg": "#181a1f",
+            "code_border": "#333842",
+            "code_fg": "#dcdcdc",
+            "thought_bg": "rgba(0, 0, 0, 0.25)",
+            "thought_border": "rgba(255, 255, 255, 0.1)",
+            "thought_fg": "#a4b0be",
+            "res_success_bg": "rgba(46, 204, 113, 0.12)",
+            "res_success_border": "rgba(46, 204, 113, 0.4)",
+            "res_success_fg": "#2ecc71",
+            "res_success_val": "#d1d8e0",
+            "res_err_bg": "rgba(231, 76, 60, 0.14)",
+            "res_err_border": "rgba(231, 76, 60, 0.45)",
+            "res_err_fg": "#e74c3c",
+            "res_err_val": "#ffb8b8",
+        }
+    else:
+        return {
+            "dark": False,
+            "badge_sel_bg": "rgba(52, 152, 219, 0.12)",
+            "badge_sel_border": "rgba(52, 152, 219, 0.4)",
+            "badge_sel_fg": "#1b4f72",
+            "badge_none_bg": "rgba(0, 0, 0, 0.04)",
+            "badge_none_border": "rgba(0, 0, 0, 0.1)",
+            "badge_none_fg": "#666666",
+            "user_box_bg": "rgba(0, 0, 0, 0.04)",
+            "user_box_border": "rgba(0, 0, 0, 0.08)",
+            "user_box_fg": "#1f2937",
+            "user_sel_fg": "#0984e3",
+            "btn_toggle_fg": "#374151",
+            "btn_toggle_bg": "rgba(0, 0, 0, 0.04)",
+            "btn_toggle_hover": "#111827",
+            "code_bg": "#f8f9fa",
+            "code_border": "#dcdfe6",
+            "code_fg": "#1f2937",
+            "thought_bg": "rgba(0, 0, 0, 0.03)",
+            "thought_border": "rgba(0, 0, 0, 0.12)",
+            "thought_fg": "#374151",
+            "res_success_bg": "rgba(39, 174, 96, 0.08)",
+            "res_success_border": "rgba(39, 174, 96, 0.35)",
+            "res_success_fg": "#1e8449",
+            "res_success_val": "#1f2937",
+            "res_err_bg": "rgba(231, 76, 60, 0.08)",
+            "res_err_border": "rgba(231, 76, 60, 0.35)",
+            "res_err_fg": "#c0392b",
+            "res_err_val": "#78281f",
+        }
 
 
 def format_user_friendly_error(error_input: Any) -> str:
@@ -108,7 +199,6 @@ def format_user_friendly_error(error_input: Any) -> str:
 
     # Strip prefixes like google.genai.errors.ServerError: or Agent Error:
     cleaned = re.sub(r"^(google\.genai\.errors\.\w+:\s*|Agent Error:\s*)+", "", raw)
-    # Strip any trailing JSON / dict dictionary blob starting with {'error' or {"error"
     cleaned = re.split(r"\s*[\{\[]\s*['\"]error", cleaned)[0].strip()
     cleaned = cleaned.rstrip(".:, ")
     if cleaned:
@@ -154,6 +244,148 @@ class SelectionObserver:
         self.callback()
 
 
+# ── Formatted Tool Controls ──────────────────────────────────────────
+
+class FormattedCodeBox(QtWidgets.QWidget):
+    """Multiline formatted code control for execute_python invocations."""
+
+    def __init__(self, code_text: str, parent: Optional[QtWidgets.QWidget] = None):
+        super().__init__(parent)
+        palette = get_theme_palette(self)
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.setContentsMargins(0, 2, 0, 2)
+        layout.setSpacing(3)
+
+        # Header Bar
+        header_layout = QtWidgets.QHBoxLayout()
+        header_layout.setContentsMargins(2, 0, 2, 0)
+        lbl_title = QtWidgets.QLabel("⚡ <b>Execute Python:</b>", self)
+        lbl_title.setTextFormat(QtCore.Qt.RichText)
+        lbl_title.setStyleSheet(f"font-size: 11px; color: {palette['user_sel_fg']};")
+        header_layout.addWidget(lbl_title)
+        header_layout.addStretch(1)
+
+        badge = QtWidgets.QLabel("Python", self)
+        badge.setStyleSheet(
+            f"font-size: 9px; font-weight: bold; background: {palette['badge_none_bg']}; "
+            f"border: 1px solid {palette['badge_none_border']}; border-radius: 3px; padding: 1px 4px; color: {palette['badge_none_fg']};"
+        )
+        header_layout.addWidget(badge)
+        layout.addLayout(header_layout)
+
+        # Monospace Code View
+        self.code_edit = QtWidgets.QPlainTextEdit(self)
+        self.code_edit.setReadOnly(True)
+        self.code_edit.setPlainText(code_text.strip())
+        self.code_edit.setLineWrapMode(QtWidgets.QPlainTextEdit.NoWrap)
+
+        lines = max(code_text.count("\n") + 1, 1)
+        calc_height = min(max(lines * 17 + 14, 50), 200)
+        self.code_edit.setFixedHeight(calc_height)
+
+        self.code_edit.setStyleSheet(
+            f"""
+            QPlainTextEdit {{
+                background-color: {palette['code_bg']};
+                border: 1px solid {palette['code_border']};
+                border-radius: 4px;
+                color: {palette['code_fg']};
+                font-family: Consolas, 'Courier New', monospace;
+                font-size: 11px;
+                padding: 4px 6px;
+            }}
+            """
+        )
+        layout.addWidget(self.code_edit)
+
+
+class FormattedResultCard(QtWidgets.QFrame):
+    """Color-coded card for unparsed and structured JSON tool results."""
+
+    def __init__(self, tool_name: str, result_str: str, parent: Optional[QtWidgets.QWidget] = None):
+        super().__init__(parent)
+        palette = get_theme_palette(self)
+
+        # Parse JSON
+        parsed: Optional[Any] = None
+        is_error = False
+        try:
+            parsed = json.loads(result_str)
+            if isinstance(parsed, dict):
+                if "error" in parsed or parsed.get("status") == "error" or parsed.get("success") is False:
+                    is_error = True
+        except Exception:
+            if "error" in result_str.lower() or "exception" in result_str.lower():
+                is_error = True
+
+        bg = palette["res_err_bg"] if is_error else palette["res_success_bg"]
+        border = palette["res_err_border"] if is_error else palette["res_success_border"]
+        accent = palette["res_err_fg"] if is_error else palette["res_success_fg"]
+        val_color = palette["res_err_val"] if is_error else palette["res_success_val"]
+
+        self.setStyleSheet(
+            f"""
+            FormattedResultCard {{
+                background: {bg};
+                border: 1px solid {border};
+                border-radius: 4px;
+                margin: 2px 0 4px 4px;
+            }}
+            """
+        )
+
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.setContentsMargins(8, 6, 8, 6)
+        layout.setSpacing(3)
+
+        # Header Row
+        header_layout = QtWidgets.QHBoxLayout()
+        icon = "❌" if is_error else "✔"
+        title_text = "Error" if is_error else "Result"
+        lbl_head = QtWidgets.QLabel(f"{icon} <b>{title_text}</b>", self)
+        lbl_head.setTextFormat(QtCore.Qt.RichText)
+        lbl_head.setStyleSheet(f"font-size: 11px; color: {accent}; font-weight: bold;")
+        header_layout.addWidget(lbl_head)
+        header_layout.addStretch(1)
+
+        tool_badge = QtWidgets.QLabel(tool_name, self)
+        tool_badge.setStyleSheet(
+            f"font-size: 9px; font-family: monospace; color: {palette['badge_none_fg']}; "
+            f"background: {palette['badge_none_bg']}; border-radius: 2px; padding: 1px 3px;"
+        )
+        header_layout.addWidget(tool_badge)
+        layout.addLayout(header_layout)
+
+        # Content Rendering
+        if isinstance(parsed, dict):
+            for k, v in list(parsed.items())[:6]:
+                row = QtWidgets.QHBoxLayout()
+                row.setContentsMargins(4, 0, 4, 0)
+                row.setSpacing(4)
+
+                lbl_k = QtWidgets.QLabel(f"• <b>{html.escape(str(k))}:</b>", self)
+                lbl_k.setTextFormat(QtCore.Qt.RichText)
+                lbl_k.setStyleSheet(f"font-size: 11px; color: {accent}; font-family: monospace;")
+                row.addWidget(lbl_k)
+
+                val_str = json.dumps(v) if isinstance(v, (dict, list)) else str(v)
+                lbl_v = QtWidgets.QLabel(html.escape(val_str), self)
+                lbl_v.setWordWrap(True)
+                lbl_v.setStyleSheet(f"font-size: 11px; color: {val_color}; font-family: monospace;")
+                row.addWidget(lbl_v, stretch=1)
+                layout.addLayout(row)
+
+            if len(parsed) > 6:
+                more_lbl = QtWidgets.QLabel(f"... and {len(parsed) - 6} more fields", self)
+                more_lbl.setStyleSheet(f"font-size: 10px; color: {palette['badge_none_fg']}; font-style: italic; margin-left: 12px;")
+                layout.addWidget(more_lbl)
+        else:
+            lbl = QtWidgets.QLabel(html.escape(result_str[:300] + ("..." if len(result_str) > 300 else "")), self)
+            lbl.setWordWrap(True)
+            lbl.setStyleSheet(f"font-size: 11px; color: {val_color}; font-family: monospace; padding-left: 4px;")
+            layout.addWidget(lbl)
+
+
 # ── Collapsible History Sections ─────────────────────────────────────
 
 class CollapsibleSection(QtWidgets.QWidget):
@@ -163,6 +395,7 @@ class CollapsibleSection(QtWidgets.QWidget):
         super().__init__(parent)
         self.title_text = title
         self._is_expanded = True
+        palette = get_theme_palette(self)
 
         self._main_layout = QtWidgets.QVBoxLayout(self)
         self._main_layout.setContentsMargins(0, 2, 0, 2)
@@ -174,21 +407,20 @@ class CollapsibleSection(QtWidgets.QWidget):
         self.toggle_btn.setToolButtonStyle(QtCore.Qt.ToolButtonTextBesideIcon)
         self.toggle_btn.setCursor(QtCore.Qt.PointingHandCursor)
         self.toggle_btn.setStyleSheet(
-            """
-            QToolButton {
-                border: none;
+            f"""
+            QToolButton {{
+                border: 1px solid {palette['user_box_border']};
                 font-size: 11px;
                 font-weight: 600;
-                color: #8fa1b3;
-                background: rgba(128, 128, 128, 0.08);
+                color: {palette['btn_toggle_fg']};
+                background: {palette['btn_toggle_bg']};
                 border-radius: 4px;
                 text-align: left;
                 padding: 4px 8px;
-            }
-            QToolButton:hover {
-                background: rgba(128, 128, 128, 0.16);
-                color: #d1d8e0;
-            }
+            }}
+            QToolButton:hover {{
+                color: {palette['btn_toggle_hover']};
+            }}
             """
         )
         self.toggle_btn.clicked.connect(self._on_toggle_clicked)
@@ -226,21 +458,22 @@ class ThoughtSection(CollapsibleSection):
 
     def __init__(self, parent: Optional[QtWidgets.QWidget] = None):
         super().__init__("Thinking...", parent)
+        palette = get_theme_palette(self)
         self.thought_edit = QtWidgets.QPlainTextEdit(self.content_frame)
         self.thought_edit.setReadOnly(True)
         self.thought_edit.setLineWrapMode(QtWidgets.QPlainTextEdit.WidgetWidth)
         self.thought_edit.setMaximumHeight(140)
         self.thought_edit.setStyleSheet(
-            """
-            QPlainTextEdit {
-                background: rgba(0, 0, 0, 0.15);
-                border: 1px solid rgba(128, 128, 128, 0.2);
+            f"""
+            QPlainTextEdit {{
+                background-color: {palette['thought_bg']};
+                border: 1px solid {palette['thought_border']};
                 border-radius: 4px;
                 font-family: Consolas, 'Courier New', monospace;
                 font-size: 11px;
-                color: #a4b0be;
+                color: {palette['thought_fg']};
                 padding: 4px;
-            }
+            }}
             """
         )
         self.content_layout.addWidget(self.thought_edit)
@@ -261,7 +494,7 @@ class ThoughtSection(CollapsibleSection):
 
 
 class WorkSection(CollapsibleSection):
-    """Collapsible section displaying executed tools, results, and operation notices."""
+    """Collapsible section displaying executed tools, multiline python code, and colored JSON results."""
 
     def __init__(self, parent: Optional[QtWidgets.QWidget] = None):
         super().__init__("Working...", parent)
@@ -269,32 +502,42 @@ class WorkSection(CollapsibleSection):
 
     def add_tool_call(self, tool_name: str, args: dict):
         self._tool_count += 1
-        args_summary = ", ".join(f"{k}={v}" for k, v in list(args.items())[:3])
-        if len(args) > 3:
-            args_summary += ", ..."
-        lbl = QtWidgets.QLabel(self.content_frame)
-        lbl.setWordWrap(True)
-        lbl.setTextFormat(QtCore.Qt.RichText)
-        lbl.setStyleSheet("font-family: Consolas, monospace; font-size: 11px; color: #54a0ff; margin: 1px 0;")
-        lbl.setText(f"⚡ <b>Executing:</b> {html.escape(tool_name)}({html.escape(args_summary)})")
-        self.content_layout.addWidget(lbl)
+        palette = get_theme_palette(self)
+
+        # If execute_python, render multiline formatted code control
+        if tool_name == "execute_python":
+            code_str = str(args.get("code") or args.get("script") or "")
+            if code_str:
+                code_box = FormattedCodeBox(code_str, self.content_frame)
+                self.content_layout.addWidget(code_box)
+            else:
+                lbl = QtWidgets.QLabel("⚡ <b>Execute Python:</b> (empty)", self.content_frame)
+                lbl.setTextFormat(QtCore.Qt.RichText)
+                lbl.setStyleSheet(f"font-family: Consolas, monospace; font-size: 11px; color: {palette['user_sel_fg']};")
+                self.content_layout.addWidget(lbl)
+        else:
+            args_summary = ", ".join(f"{k}={v}" for k, v in list(args.items())[:3])
+            if len(args) > 3:
+                args_summary += ", ..."
+            lbl = QtWidgets.QLabel(self.content_frame)
+            lbl.setWordWrap(True)
+            lbl.setTextFormat(QtCore.Qt.RichText)
+            lbl.setStyleSheet(f"font-family: Consolas, monospace; font-size: 11px; color: {palette['user_sel_fg']}; margin: 1px 0;")
+            lbl.setText(f"⚡ <b>Executing:</b> {html.escape(tool_name)}({html.escape(args_summary)})")
+            self.content_layout.addWidget(lbl)
+
         cmd_word = "command" if self._tool_count == 1 else "commands"
         self.set_title(f"Working ({self._tool_count} {cmd_word})...")
 
     def add_tool_result(self, tool_name: str, result_str: str):
-        preview = result_str[:200] + ("..." if len(result_str) > 200 else "")
-        lbl = QtWidgets.QLabel(self.content_frame)
-        lbl.setWordWrap(True)
-        lbl.setTextFormat(QtCore.Qt.RichText)
-        lbl.setStyleSheet("font-family: Consolas, monospace; font-size: 11px; color: #1dd1a1; margin: 1px 0 4px 8px;")
-        lbl.setText(f"✔ <b>Result:</b> {html.escape(preview)}")
-        self.content_layout.addWidget(lbl)
+        card = FormattedResultCard(tool_name, result_str, self.content_frame)
+        self.content_layout.addWidget(card)
 
     def add_notice(self, notice_text: str):
         lbl = QtWidgets.QLabel(self.content_frame)
         lbl.setWordWrap(True)
         lbl.setTextFormat(QtCore.Qt.RichText)
-        lbl.setText(f"<div style='color: #ff9f43; font-size: 11px; margin: 2px 0;'>{notice_text}</div>")
+        lbl.setText(f"<div style='color: #e67e22; font-size: 11px; margin: 2px 0;'>{notice_text}</div>")
         self.content_layout.addWidget(lbl)
 
     def finish(self, duration: float, count: int):
@@ -312,6 +555,7 @@ class TurnCardWidget(QtWidgets.QFrame):
 
     def __init__(self, prompt: str, selection_badge: Optional[str] = None, parent: Optional[QtWidgets.QWidget] = None):
         super().__init__(parent)
+        palette = get_theme_palette(self)
         self.setObjectName("TurnCard")
         self.setStyleSheet(
             "#TurnCard { background: transparent; border-bottom: 1px solid palette(mid); margin-bottom: 10px; }"
@@ -324,7 +568,7 @@ class TurnCardWidget(QtWidgets.QFrame):
         self.user_box = QtWidgets.QFrame(self)
         self.user_box.setObjectName("UserBox")
         self.user_box.setStyleSheet(
-            "#UserBox { background: palette(midlight); border-radius: 6px; padding: 6px 10px; }"
+            f"#UserBox {{ background: {palette['user_box_bg']}; border: 1px solid {palette['user_box_border']}; border-radius: 6px; padding: 6px 10px; }}"
         )
         user_layout = QtWidgets.QVBoxLayout(self.user_box)
         user_layout.setContentsMargins(6, 6, 6, 6)
@@ -332,13 +576,14 @@ class TurnCardWidget(QtWidgets.QFrame):
 
         if selection_badge:
             sel_lbl = QtWidgets.QLabel(f"🎯 {selection_badge}", self.user_box)
-            sel_lbl.setStyleSheet("font-size: 10px; color: #48dbfb; font-weight: 600;")
+            sel_lbl.setStyleSheet(f"font-size: 10px; color: {palette['user_sel_fg']}; font-weight: 600;")
             user_layout.addWidget(sel_lbl)
 
         prompt_lbl = QtWidgets.QLabel(self.user_box)
         prompt_lbl.setWordWrap(True)
         prompt_lbl.setTextFormat(QtCore.Qt.RichText)
         prompt_lbl.setText(f"<b>You:</b> {html.escape(prompt)}")
+        prompt_lbl.setStyleSheet(f"color: {palette['user_box_fg']}; font-size: 12px;")
         prompt_lbl.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
         user_layout.addWidget(prompt_lbl)
         self._layout.addWidget(self.user_box)
@@ -356,7 +601,7 @@ class TurnCardWidget(QtWidgets.QFrame):
         )
         self.response_label.setOpenExternalLinks(True)
         self.response_label.setStyleSheet(
-            "QLabel { font-family: sans-serif; font-size: 12px; line-height: 1.4; padding: 4px; }"
+            f"QLabel {{ font-family: sans-serif; font-size: 12px; line-height: 1.4; padding: 4px; color: {palette['user_box_fg']}; }}"
         )
         self.response_label.setVisible(False)
         self._layout.addWidget(self.response_label)
@@ -364,7 +609,7 @@ class TurnCardWidget(QtWidgets.QFrame):
         # 4. Turn Error Box
         self.turn_error_box = QtWidgets.QFrame(self)
         self.turn_error_box.setStyleSheet(
-            "background: rgba(231, 76, 60, 0.12); border: 1px solid #e74c3c; border-radius: 4px; padding: 4px;"
+            f"background: {palette['res_err_bg']}; border: 1px solid {palette['res_err_border']}; border-radius: 4px; padding: 4px;"
         )
         err_layout = QtWidgets.QHBoxLayout(self.turn_error_box)
         err_layout.setContentsMargins(6, 4, 6, 4)
@@ -373,7 +618,7 @@ class TurnCardWidget(QtWidgets.QFrame):
         err_layout.addWidget(self.err_icon)
         self.err_label = QtWidgets.QLabel()
         self.err_label.setWordWrap(True)
-        self.err_label.setStyleSheet("color: #e74c3c; font-size: 11px; font-weight: 500;")
+        self.err_label.setStyleSheet(f"color: {palette['res_err_fg']}; font-size: 11px; font-weight: 500;")
         err_layout.addWidget(self.err_label, stretch=1)
         self.turn_error_box.setVisible(False)
         self._layout.addWidget(self.turn_error_box)
@@ -550,9 +795,11 @@ class AICopilotDockWidget(QtWidgets.QDockWidget):
         layout.addLayout(toolbar)
 
         # ── Live Selection Badge ─────────────────────────────────────
+        palette = get_theme_palette(self)
         self.selection_label = QtWidgets.QLabel("🎯 Selection: None")
         self.selection_label.setStyleSheet(
-            "background: palette(alternate-base); border-radius: 4px; padding: 4px 6px; font-size: 11px;"
+            f"background: {palette['badge_none_bg']}; color: {palette['badge_none_fg']}; "
+            f"border: 1px solid {palette['badge_none_border']}; border-radius: 4px; padding: 4px 6px; font-size: 11px;"
         )
         self.selection_label.setWordWrap(True)
         layout.addWidget(self.selection_label)
@@ -570,8 +817,8 @@ class AICopilotDockWidget(QtWidgets.QDockWidget):
         self.error_frame = QtWidgets.QFrame()
         self.error_frame.setObjectName("ErrorBanner")
         self.error_frame.setStyleSheet(
-            "#ErrorBanner { background: rgba(231, 76, 60, 0.12); border: 1px solid #e74c3c; "
-            "border-radius: 4px; padding: 2px 4px; }"
+            f"#ErrorBanner {{ background: {palette['res_err_bg']}; border: 1px solid {palette['res_err_border']}; "
+            f"border-radius: 4px; padding: 2px 4px; }}"
         )
         error_layout = QtWidgets.QHBoxLayout(self.error_frame)
         error_layout.setContentsMargins(6, 4, 6, 4)
@@ -583,15 +830,15 @@ class AICopilotDockWidget(QtWidgets.QDockWidget):
 
         self.error_label = QtWidgets.QLabel()
         self.error_label.setWordWrap(True)
-        self.error_label.setStyleSheet("color: #e74c3c; font-size: 11px; font-weight: 500;")
+        self.error_label.setStyleSheet(f"color: {palette['res_err_fg']}; font-size: 11px; font-weight: 500;")
         error_layout.addWidget(self.error_label, stretch=1)
 
         self.btn_dismiss_error = QtWidgets.QPushButton("✕")
         self.btn_dismiss_error.setToolTip("Dismiss error")
         self.btn_dismiss_error.setFixedSize(18, 18)
         self.btn_dismiss_error.setStyleSheet(
-            "QPushButton { border: none; font-size: 11px; font-weight: bold; color: #888; background: transparent; } "
-            "QPushButton:hover { color: #e74c3c; background: rgba(231, 76, 60, 0.2); border-radius: 9px; }"
+            f"QPushButton {{ border: none; font-size: 11px; font-weight: bold; color: {palette['badge_none_fg']}; background: transparent; }} "
+            f"QPushButton:hover {{ color: {palette['res_err_fg']}; background: {palette['res_err_bg']}; border-radius: 9px; }}"
         )
         self.btn_dismiss_error.clicked.connect(self._dismiss_error_banner)
         error_layout.addWidget(self.btn_dismiss_error)
@@ -634,6 +881,8 @@ class AICopilotDockWidget(QtWidgets.QDockWidget):
         if hasattr(self.worker, "sig_thought"):
             self.worker.sig_thought.connect(self._on_thought_received)
         self.worker.sig_token.connect(self._on_token_received)
+        if hasattr(self.worker, "sig_notice"):
+            self.worker.sig_notice.connect(self._on_notice_received)
         self.worker.sig_status.connect(self._on_status_changed)
         self.worker.sig_tool_started.connect(self._on_tool_started)
         self.worker.sig_tool_finished.connect(self._on_tool_finished)
@@ -678,16 +927,19 @@ class AICopilotDockWidget(QtWidgets.QDockWidget):
         return "; ".join(items)
 
     def _update_selection_badge(self):
+        palette = get_theme_palette(self)
         summary = self._get_selection_summary()
         if summary:
             self.selection_label.setText(f"🎯 <b>Selected:</b> {html.escape(summary)}")
             self.selection_label.setStyleSheet(
-                "background: #2a3a4a; color: #8ec5fc; border-radius: 4px; padding: 4px 6px; font-size: 11px;"
+                f"background: {palette['badge_sel_bg']}; color: {palette['badge_sel_fg']}; "
+                f"border: 1px solid {palette['badge_sel_border']}; border-radius: 4px; padding: 4px 6px; font-size: 11px;"
             )
         else:
             self.selection_label.setText("🎯 Selection: None")
             self.selection_label.setStyleSheet(
-                "background: palette(alternate-base); border-radius: 4px; padding: 4px 6px; font-size: 11px;"
+                f"background: {palette['badge_none_bg']}; color: {palette['badge_none_fg']}; "
+                f"border: 1px solid {palette['badge_none_border']}; border-radius: 4px; padding: 4px 6px; font-size: 11px;"
             )
 
     # ── Chat Actions & Formatting ────────────────────────────────────
@@ -860,13 +1112,11 @@ class AICopilotDockWidget(QtWidgets.QDockWidget):
             self._active_turn_card.ensure_thought_section().append_thought(token)
 
     def _on_token_received(self, token: str):
-        # Intercept operational HTML notices if delivered via token stream
         if token.startswith("<div style="):
             self._on_notice_received(token)
             return
 
         if self._active_turn_card:
-            # Auto-collapse work section when model begins streaming final response
             if self._active_turn_card.work_section and not self._current_assistant_buffer:
                 self._active_turn_card.work_section.set_collapsed(True)
             self._active_turn_card.append_response_token(token)
