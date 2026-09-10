@@ -32,6 +32,7 @@ else:
 
         def __init__(self):
             self.socket_server = None
+            self.dock_widget = None
             self.is_running = False
 
         @staticmethod
@@ -77,7 +78,7 @@ else:
                 FreeCAD.Console.PrintWarning(f"Could not hook aboutToQuit cleanup: {e}\n")
 
         def start(self):
-            """Start the MCP socket server."""
+            """Start the MCP socket server and embedded dock widget."""
             if self.is_running:
                 FreeCAD.Console.PrintMessage("AI Service already running\n")
                 return True
@@ -133,6 +134,30 @@ else:
             except Exception as e:
                 FreeCAD.Console.PrintWarning(f"Stale socket sweep failed: {e}\n")
 
+            # Initialize embedded AI Copilot Dock Widget in FreeCAD GUI
+            try:
+                try:
+                    from PySide import QtCore, QtWidgets
+                except (ImportError, AttributeError):
+                    from PySide6 import QtCore, QtWidgets
+
+                try:
+                    from AICopilot.ui.dock_widget import AICopilotDockWidget
+                except ImportError:
+                    from ui.dock_widget import AICopilotDockWidget
+
+                main_win = FreeCADGui.getMainWindow()
+                if main_win:
+                    existing = main_win.findChild(QtWidgets.QDockWidget, "AICopilotDockWidget")
+                    if existing:
+                        self.dock_widget = existing
+                    else:
+                        self.dock_widget = AICopilotDockWidget(main_win)
+                        main_win.addDockWidget(QtCore.Qt.RightDockWidgetArea, self.dock_widget)
+                    FreeCAD.Console.PrintMessage("AI Copilot Dock Widget initialized.\n")
+            except Exception as e:
+                FreeCAD.Console.PrintWarning(f"AI Copilot Dock Widget initialization skipped: {e}\n")
+
             self.is_running = True
             FreeCAD.__ai_global_service = self
             FreeCAD.Console.PrintMessage("AI Copilot Service running - available from all workbenches\n")
@@ -142,7 +167,7 @@ else:
             return True
 
         def stop(self):
-            """Stop the MCP socket server."""
+            """Stop the MCP socket server and clean up embedded dock widget."""
             if not self.is_running:
                 return
 
@@ -151,6 +176,14 @@ else:
             if self.socket_server:
                 self.socket_server.stop_server()
                 self.socket_server = None
+
+            if getattr(self, "dock_widget", None):
+                try:
+                    self.dock_widget.close()
+                    self.dock_widget.deleteLater()
+                except Exception:
+                    pass
+                self.dock_widget = None
 
             self.is_running = False
 
@@ -168,6 +201,38 @@ else:
                     delattr(FreeCAD, attr)
 
             FreeCAD.Console.PrintMessage("AI Copilot Service stopped\n")
+
+    class AICopilotToggleCommand:
+        """FreeCAD GUI command to toggle visibility of AI Copilot panel."""
+
+        def GetResources(self):
+            return {
+                'MenuText': 'AI Copilot',
+                'ToolTip': 'Toggle embedded AI Copilot panel',
+                'Accel': 'Ctrl+Shift+A',
+            }
+
+        def Activated(self):
+            try:
+                try:
+                    from PySide import QtWidgets
+                except (ImportError, AttributeError):
+                    from PySide6 import QtWidgets
+                main_win = FreeCADGui.getMainWindow()
+                if main_win:
+                    dock = main_win.findChild(QtWidgets.QDockWidget, "AICopilotDockWidget")
+                    if dock:
+                        dock.setVisible(not dock.isVisible())
+            except Exception as e:
+                FreeCAD.Console.PrintError(f"Could not toggle AI Copilot: {e}\n")
+
+        def IsActive(self):
+            return True
+
+    try:
+        FreeCADGui.addCommand('AICopilot_ToggleDock', AICopilotToggleCommand())
+    except Exception:
+        pass
 
     # Auto-start (skip in test mode)
     if os.environ.get('FREECAD_MCP_TEST_MODE') == '1':
