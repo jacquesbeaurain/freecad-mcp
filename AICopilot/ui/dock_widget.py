@@ -135,6 +135,28 @@ def get_theme_palette(widget: Optional[QtWidgets.QWidget] = None) -> dict:
         }
 
 
+def clean_markdown_text(text: str) -> str:
+    """Strip LaTeX math formatting that Qt's CommonMark Markdown renderer cannot display.
+
+    Converts expressions like '$X$: $0.00 \\text{ mm}$ to $900.00 \\text{ mm}$' into
+    'X: 0.00 mm to 900.00 mm'.
+    """
+    if not text:
+        return text
+    s = text
+    s = s.replace(r"\times", "x")
+    s = s.replace(r"\approx", "~")
+    s = s.replace(r"\pm", "+/-")
+    s = s.replace(r"\leq", "<=").replace(r"\le", "<=")
+    s = s.replace(r"\geq", ">=").replace(r"\ge", ">=")
+    s = s.replace(r"^\circ", " deg").replace(r"\degree", " deg")
+    s = re.sub(r"\\(?:text|mathrm|mathbf|mathit)\{\s*([^}]+?)\s*\}", r"\1", s)
+    s = re.sub(r"(?<!\\)\$([^\$\n]+?)\$", r"\1", s)
+    s = re.sub(r"(?<!\\)\$\$([^\$]+?)\$\$", r"\1", s)
+    s = re.sub(r"([0-9])\s{2,}([a-zA-Z])", r"\1 \2", s)
+    return s
+
+
 def format_user_friendly_error(error_input: Any) -> str:
     """Extract a clean, human-readable error message, stripping raw JSON and dicts."""
     raw = str(error_input).strip()
@@ -261,11 +283,13 @@ class FormattedCodeBox(QtWidgets.QWidget):
         header_layout.setContentsMargins(2, 0, 2, 0)
         lbl_title = QtWidgets.QLabel("⚡ <b>Execute Python:</b>", self)
         lbl_title.setTextFormat(QtCore.Qt.RichText)
+        lbl_title.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
         lbl_title.setStyleSheet(f"font-size: 11px; color: {palette['user_sel_fg']};")
         header_layout.addWidget(lbl_title)
         header_layout.addStretch(1)
 
         badge = QtWidgets.QLabel("Python", self)
+        badge.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
         badge.setStyleSheet(
             f"font-size: 9px; font-weight: bold; background: {palette['badge_none_bg']}; "
             f"border: 1px solid {palette['badge_none_border']}; border-radius: 3px; padding: 1px 4px; color: {palette['badge_none_fg']};"
@@ -276,6 +300,7 @@ class FormattedCodeBox(QtWidgets.QWidget):
         # Monospace Code View
         self.code_edit = QtWidgets.QPlainTextEdit(self)
         self.code_edit.setReadOnly(True)
+        self.code_edit.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse | QtCore.Qt.TextSelectableByKeyboard)
         self.code_edit.setPlainText(code_text.strip())
         self.code_edit.setLineWrapMode(QtWidgets.QPlainTextEdit.NoWrap)
 
@@ -344,11 +369,13 @@ class FormattedResultCard(QtWidgets.QFrame):
         title_text = "Error" if is_error else "Result"
         lbl_head = QtWidgets.QLabel(f"{icon} <b>{title_text}</b>", self)
         lbl_head.setTextFormat(QtCore.Qt.RichText)
+        lbl_head.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
         lbl_head.setStyleSheet(f"font-size: 11px; color: {accent}; font-weight: bold;")
         header_layout.addWidget(lbl_head)
         header_layout.addStretch(1)
 
         tool_badge = QtWidgets.QLabel(tool_name, self)
+        tool_badge.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
         tool_badge.setStyleSheet(
             f"font-size: 9px; font-family: monospace; color: {palette['badge_none_fg']}; "
             f"background: {palette['badge_none_bg']}; border-radius: 2px; padding: 1px 3px;"
@@ -365,23 +392,27 @@ class FormattedResultCard(QtWidgets.QFrame):
 
                 lbl_k = QtWidgets.QLabel(f"• <b>{html.escape(str(k))}:</b>", self)
                 lbl_k.setTextFormat(QtCore.Qt.RichText)
+                lbl_k.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
                 lbl_k.setStyleSheet(f"font-size: 11px; color: {accent}; font-family: monospace;")
                 row.addWidget(lbl_k)
 
                 val_str = json.dumps(v) if isinstance(v, (dict, list)) else str(v)
                 lbl_v = QtWidgets.QLabel(html.escape(val_str), self)
                 lbl_v.setWordWrap(True)
+                lbl_v.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
                 lbl_v.setStyleSheet(f"font-size: 11px; color: {val_color}; font-family: monospace;")
                 row.addWidget(lbl_v, stretch=1)
                 layout.addLayout(row)
 
             if len(parsed) > 6:
                 more_lbl = QtWidgets.QLabel(f"... and {len(parsed) - 6} more fields", self)
+                more_lbl.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
                 more_lbl.setStyleSheet(f"font-size: 10px; color: {palette['badge_none_fg']}; font-style: italic; margin-left: 12px;")
                 layout.addWidget(more_lbl)
         else:
             lbl = QtWidgets.QLabel(html.escape(result_str[:300] + ("..." if len(result_str) > 300 else "")), self)
             lbl.setWordWrap(True)
+            lbl.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
             lbl.setStyleSheet(f"font-size: 11px; color: {val_color}; font-family: monospace; padding-left: 4px;")
             layout.addWidget(lbl)
 
@@ -513,6 +544,7 @@ class WorkSection(CollapsibleSection):
             else:
                 lbl = QtWidgets.QLabel("⚡ <b>Execute Python:</b> (empty)", self.content_frame)
                 lbl.setTextFormat(QtCore.Qt.RichText)
+                lbl.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
                 lbl.setStyleSheet(f"font-family: Consolas, monospace; font-size: 11px; color: {palette['user_sel_fg']};")
                 self.content_layout.addWidget(lbl)
         else:
@@ -522,6 +554,7 @@ class WorkSection(CollapsibleSection):
             lbl = QtWidgets.QLabel(self.content_frame)
             lbl.setWordWrap(True)
             lbl.setTextFormat(QtCore.Qt.RichText)
+            lbl.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
             lbl.setStyleSheet(f"font-family: Consolas, monospace; font-size: 11px; color: {palette['user_sel_fg']}; margin: 1px 0;")
             lbl.setText(f"⚡ <b>Executing:</b> {html.escape(tool_name)}({html.escape(args_summary)})")
             self.content_layout.addWidget(lbl)
@@ -537,6 +570,7 @@ class WorkSection(CollapsibleSection):
         lbl = QtWidgets.QLabel(self.content_frame)
         lbl.setWordWrap(True)
         lbl.setTextFormat(QtCore.Qt.RichText)
+        lbl.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
         lbl.setText(f"<div style='color: #e67e22; font-size: 11px; margin: 2px 0;'>{notice_text}</div>")
         self.content_layout.addWidget(lbl)
 
@@ -576,6 +610,7 @@ class TurnCardWidget(QtWidgets.QFrame):
 
         if selection_badge:
             sel_lbl = QtWidgets.QLabel(f"🎯 {selection_badge}", self.user_box)
+            sel_lbl.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
             sel_lbl.setStyleSheet(f"font-size: 10px; color: {palette['user_sel_fg']}; font-weight: 600;")
             user_layout.addWidget(sel_lbl)
 
@@ -618,6 +653,7 @@ class TurnCardWidget(QtWidgets.QFrame):
         err_layout.addWidget(self.err_icon)
         self.err_label = QtWidgets.QLabel()
         self.err_label.setWordWrap(True)
+        self.err_label.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
         self.err_label.setStyleSheet(f"color: {palette['res_err_fg']}; font-size: 11px; font-weight: 500;")
         err_layout.addWidget(self.err_label, stretch=1)
         self.turn_error_box.setVisible(False)
@@ -641,7 +677,7 @@ class TurnCardWidget(QtWidgets.QFrame):
 
     def append_response_token(self, token: str):
         self._assistant_raw_text += token
-        self.response_label.setText(self._assistant_raw_text)
+        self.response_label.setText(clean_markdown_text(self._assistant_raw_text))
         if not self.response_label.isVisible():
             self.response_label.setVisible(True)
 
@@ -658,7 +694,7 @@ class TurnCardWidget(QtWidgets.QFrame):
 
         if final_text:
             self._assistant_raw_text = final_text
-            self.response_label.setText(self._assistant_raw_text)
+            self.response_label.setText(clean_markdown_text(self._assistant_raw_text))
             self.response_label.setVisible(True)
 
     def show_error(self, message: str):
@@ -676,6 +712,7 @@ class SystemMessageWidget(QtWidgets.QWidget):
         lbl = QtWidgets.QLabel(f"ℹ {text}", self)
         lbl.setWordWrap(True)
         lbl.setTextFormat(QtCore.Qt.RichText)
+        lbl.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
         lbl.setStyleSheet("color: gray; font-size: 11px;")
         layout.addWidget(lbl)
 

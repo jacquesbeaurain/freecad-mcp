@@ -857,3 +857,61 @@ def test_primitives_create_box_defaults(mock_freecad):
     assert box.Width == 100
     assert box.Height == 100
 
+
+def test_clean_markdown_text():
+    from AICopilot.ui.dock_widget import clean_markdown_text
+
+    raw = "$X$: $0.00 \\text{ mm}$ to $900.00 \\text{ mm}$"
+    cleaned = clean_markdown_text(raw)
+    assert cleaned == "X: 0.00 mm to 900.00 mm"
+
+    raw2 = "Bounding box: $100 \\times 100 \\times 100 \\text{ mm}$"
+    cleaned2 = clean_markdown_text(raw2)
+    assert cleaned2 == "Bounding box: 100 x 100 x 100 mm"
+
+    raw3 = "**$Z$**: $0.00 \\text{ mm}$"
+    cleaned3 = clean_markdown_text(raw3)
+    assert cleaned3 == "**Z**: 0.00 mm"
+
+
+def test_system_instruction_plain_markdown():
+    from AICopilot.ui.agent_worker import SYSTEM_INSTRUCTION
+    assert "Plain Markdown Formatting" in SYSTEM_INSTRUCTION
+    assert "NEVER output LaTeX math" in SYSTEM_INSTRUCTION
+
+
+def test_history_widgets_text_selectable(qapp):
+    from AICopilot.ui.dock_widget import (
+        FormattedResultCard,
+        FormattedCodeBox,
+        WorkSection,
+        TurnCardWidget,
+        QtWidgets,
+        QtCore,
+    )
+
+    # 1. FormattedResultCard labels
+    card = FormattedResultCard("measurement_operations", '{"X": "0.00 to 100.00 mm", "Y": "0.00 to 100.00 mm"}')
+    for lbl in card.findChildren(QtWidgets.QLabel):
+        flags = lbl.textInteractionFlags()
+        assert flags & QtCore.Qt.TextSelectableByMouse, f"Label {lbl.text()} is not selectable"
+
+    # 2. FormattedCodeBox
+    code_box = FormattedCodeBox("print('hello world')")
+    code_flags = code_box.code_edit.textInteractionFlags()
+    assert code_flags & QtCore.Qt.TextSelectableByMouse
+
+    # 3. WorkSection
+    work = WorkSection()
+    work.add_tool_call("partdesign_operations", {"operation": "additive_box", "length": 100})
+    for lbl in work.content_frame.findChildren(QtWidgets.QLabel):
+        flags = lbl.textInteractionFlags()
+        assert flags & QtCore.Qt.TextSelectableByMouse
+
+    # 4. TurnCardWidget
+    turn = TurnCardWidget("Create a 100mm cube", selection_badge="Box.Face1")
+    turn.finish_turn("Finished: $X$: $0.00 \\text{ mm}$ to $100.00 \\text{ mm}$")
+    assert "X: 0.00 mm to 100.00 mm" in turn.response_label.text()
+    assert "$" not in turn.response_label.text()
+    assert turn.response_label.textInteractionFlags() & QtCore.Qt.TextSelectableByMouse
+
