@@ -42,6 +42,10 @@ During multi-step execution, model busy (503) and rate limit (429) quota pauses 
 Refined controls for Light and Classic themes with read-only syntax-styled multiline Python code boxes and structured, color-coded JSON result cards:
 ![Refined Light Theme UI with Multiline Python and Color-Coded Results](img/copilot_refined_light_theme.png)
 
+### Live Python Fallback & 100mm Solid Cube Verification
+When `part_operations` encountered the `create_box` mismatch, the Copilot gracefully fell back to `execute_python`, adhered to canonical solid modeling rules, verified geometry health, and successfully created a valid 6-faced solid `Part::Box` with 100x100x100mm dimensions and 1,000,000 mm³ volume:
+![Live 100mm Cube Creation via Python Fallback](img/cube_fallback_verification.png)
+
 ---
 
 ## 3. Git Commit History in `freecad-mcp`
@@ -67,6 +71,7 @@ The implementation was delivered across clean, well-documented commits following
 | [`28de92e`](../../../commit/28de92e) | `feat(copilotui): add embedded copilot walkthrough and visual verification to docs` | [`EMBEDDED_AI_COPILOT_WALKTHROUGH.md`](EMBEDDED_AI_COPILOT_WALKTHROUGH.md) |
 | [`177d534`](../../../commit/177d534) | `feat(copilotui): add collapsible thought and work sections with markdown summaries` | [`../AICopilot/ui/agent_worker.py`](../AICopilot/ui/agent_worker.py), [`../AICopilot/ui/dock_widget.py`](../AICopilot/ui/dock_widget.py), [`../tests/unit/test_copilot_dock_widget.py`](../tests/unit/test_copilot_dock_widget.py) |
 | [`4633547`](../../../commit/4633547) | `feat(copilotui): add multiline python controls, colored json cards, and light theme styling` | [`../AICopilot/ui/dock_widget.py`](../AICopilot/ui/dock_widget.py), [`../tests/unit/test_copilot_dock_widget.py`](../tests/unit/test_copilot_dock_widget.py), [`img/copilot_refined_light_theme.png`](img/copilot_refined_light_theme.png) |
+| [`2cd57cb`](../../../commit/2cd57cb) | `feat(copilotui): add execute_python cad helpers, geometry health validation, and scripting rules` | [`../AICopilot/handlers/execute_python_ops.py`](../AICopilot/handlers/execute_python_ops.py), [`../AICopilot/ui/agent_worker.py`](../AICopilot/ui/agent_worker.py), [`../tests/unit/test_copilot_dock_widget.py`](../tests/unit/test_copilot_dock_widget.py), [`img/cube_fallback_verification.png`](img/cube_fallback_verification.png) |
 
 ---
 
@@ -211,3 +216,41 @@ Following developer feedback on the conversation history experience, three major
   - User prompt bubbles render in clean, subtle neutral backgrounds (`#1f2937` text on `rgba(0, 0, 0, 0.04)`).
   - Collapsible toggle buttons and thought panels use soft translucent tints with clear hover states.
   - Maintains sharp readability and visual separation across Dark, Classic, and Light FreeCAD themes.
+
+
+---
+
+## 9. Python Fallback Hardening, CAD Helpers & Geometry Health Validation
+
+### 1. Root Cause of the "Zero-Sided Cube"
+When evaluating the prompt `"Make a 100mm cube"`, the previous implementation produced an empty PartDesign Body with an extruded Pad that had 0 faces and 0 volume:
+1. **Mathematical Collapse**: The LLM script generated 4 coincident lines and attempted to center them using:
+   ```python
+   sketch.addConstraint(Sketcher.Constraint("Symmetric", 0, 1, 0, 2, -1, 1))
+   sketch.addConstraint(Sketcher.Constraint("Symmetric", 1, 1, 1, 2, -1, 1))
+   ```
+   In FreeCAD Sketcher, axis `-1` is the horizontal X-axis ($y = 0$). Line 0 had endpoints at $y = -50$. Symmetrizing two points with identical negative $y$-coordinates across the horizontal axis mathematically forces $y = 0$. In combination with coincident corners and horizontal/vertical constraints, all 4 vertices collapsed into a single degenerate point $(3.55 	imes 10^{-15}, 1.77 	imes 10^{-15}, 0)$ of length $pprox 0$.
+2. **OpenCASCADE Null Shape**: FreeCAD's Sketcher solver reported status `-4` (conflicting constraints) with `State=['Touched', 'Invalid']`. Extruding this degenerate sketch via `PartDesign::Pad` produced `Standard_NullObject BRepCheck_Analyzer::Init() - NULL shape`.
+3. **Silent Success False Positive**: Because Python did not raise an unhandled exception, `execute_python` previously returned `{"success": True}` with silence, blinding the agent to the failure.
+
+### 2. Built-in CAD Helpers in `execute_python`
+To guarantee the Python fallback generates valid geometry every time, `execute_python_ops.py` now injects pre-tested CAD helper functions into its persistent namespace:
+- `create_box(length=100, width=None, height=None, body=None, name="Box")`: Creates a valid solid box/cube inside a PartDesign Body if present, or a `Part::Box` otherwise.
+- `create_cylinder(radius=10, height=20, body=None, name="Cylinder")`: Creates an `AdditiveCylinder` or `Part::Cylinder`.
+- `create_sketch(plane="XY", body=None, name="Sketch")`: Properly attaches a sketch to a Body Origin plane or document coordinates.
+- `add_rectangle(sketch, width=100, height=None, center=True, x=0, y=0)`: Adds 4 lines with robust corner offset constraints (`DistanceX`, `DistanceY`) that never mathematically collapse.
+- `pad_sketch(sketch, length=10, name="Pad", reversed=False)`: Extrudes a sketch into a solid Pad within its Body.
+
+### 3. Post-Execution Geometry Health Inspection
+After executing code in `execute_python_ops.py`:
+- Triggers `doc.recompute()`.
+- Inspects all document objects:
+  - Detects if any object has `State` with `'Invalid'` or `'Error'`.
+  - Detects if any sketch has `sketch.solve() < 0` (e.g. `-4` over-constrained, `-2` conflicting).
+  - Detects if any 3D solid feature produced a NULL shape (`shape.isNull()`) or zero faces (`len(shape.Faces) == 0`).
+- If any geometry error is detected, returns `{"success": False, "error": "Geometry validation failed: ..."}` with actionable diagnostic feedback. This alerts Gemini's function-calling loop immediately so the model can self-correct instead of falsely reporting completion.
+
+### 4. Canonical Scripting Rules in System Instruction
+The Copilot's `SYSTEM_INSTRUCTION` was updated with explicit rules:
+- Prefer 1-step solids (`body.newObject("PartDesign::AdditiveBox", "Box")` or `create_box()`).
+- Explicitly forbids applying axis symmetry across the same axis on horizontal or vertical lines.
