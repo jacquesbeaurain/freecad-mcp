@@ -394,11 +394,15 @@ class AICopilotDockWidget(QtWidgets.QDockWidget):
         self._append_user_message(prompt, selection_summary)
         self._current_assistant_buffer = ""
 
+        # Open atomic undo transaction for this user turn
+        self.tool_bridge.begin_turn_transaction(prompt)
+
         # Enqueue prompt to background worker
         self.worker.submit_prompt(prompt, selection_ctx)
 
     def _on_stop_clicked(self):
         self.worker.stop()
+        self.tool_bridge.abort_turn_transaction()
         self.status_label.setText("Stopping...")
         self.btn_stop.setEnabled(False)
         self.btn_send.setEnabled(True)
@@ -549,12 +553,14 @@ class AICopilotDockWidget(QtWidgets.QDockWidget):
         self._last_submitted_prompt = None
         self.btn_send.setEnabled(True)
         self.btn_stop.setEnabled(False)
+        self.tool_bridge.commit_turn_transaction()
         if not self.error_frame.isVisible():
             self.status_label.setText("Ready")
         self._current_assistant_buffer = ""
         self._append_html("<hr style='border: none; border-top: 1px solid palette(mid); margin: 8px 0;'>")
 
     def _on_error(self, error_msg: str):
+        self.tool_bridge.abort_turn_transaction()
         cleaned_msg = format_user_friendly_error(error_msg)
         self.error_label.setText(cleaned_msg)
         self.error_frame.setVisible(True)

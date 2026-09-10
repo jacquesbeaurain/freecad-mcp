@@ -207,6 +207,7 @@ def test_dock_widget_error_handling_and_prompt_retention():
     from AICopilot.ui.dock_widget import AICopilotDockWidget
 
     mock_widget = MagicMock(spec=AICopilotDockWidget)
+    mock_widget.tool_bridge = MagicMock()
     mock_widget._last_submitted_prompt = "Create a parametric cylinder with r=10"
     mock_widget.input_edit = MagicMock()
     mock_widget.input_edit.toPlainText.return_value = ""
@@ -219,6 +220,7 @@ def test_dock_widget_error_handling_and_prompt_retention():
 
     AICopilotDockWidget._on_error(mock_widget, "503 UNAVAILABLE. {'error': {'message': 'High demand'}}")
 
+    mock_widget.tool_bridge.abort_turn_transaction.assert_called_once()
     mock_widget.input_edit.setPlainText.assert_called_once_with("Create a parametric cylinder with r=10")
     mock_widget.error_frame.setVisible.assert_called_once_with(True)
     mock_widget.error_label.setText.assert_called_once()
@@ -334,6 +336,134 @@ def test_direct_tool_bridge_spatial_query_dispatch(mock_freecad):
     res2 = bridge.execute_tool("spatial_query", {"operation": "top_face", "object_name": "Body"})
     fake_server.spatial_ops.top_face.assert_called_once()
     assert json.loads(res2)["top_face"] == "Face6"
+
+
+def test_dock_widget_turn_transaction_lifecycle():
+    from AICopilot.ui.dock_widget import AICopilotDockWidget
+
+    mock_widget = MagicMock(spec=AICopilotDockWidget)
+    mock_widget.tool_bridge = MagicMock()
+    mock_widget.worker = MagicMock()
+    mock_widget.input_edit = MagicMock()
+    mock_widget.input_edit.toPlainText.return_value = "Create a 20mm pocket"
+    mock_widget.error_frame = MagicMock()
+    mock_widget.error_frame.isVisible.return_value = False
+    mock_widget.status_label = MagicMock()
+    mock_widget.btn_send = MagicMock()
+    mock_widget.btn_stop = MagicMock()
+    mock_widget._get_selection_summary = MagicMock(return_value=None)
+    mock_widget._append_user_message = MagicMock()
+    mock_widget._append_html = MagicMock()
+
+    # 1. Send starts turn transaction
+    AICopilotDockWidget._on_send_clicked(mock_widget)
+    mock_widget.tool_bridge.begin_turn_transaction.assert_called_once_with("Create a 20mm pocket")
+    mock_widget.worker.submit_prompt.assert_called_once()
+
+    # 2. Complete commits turn transaction
+    AICopilotDockWidget._on_turn_complete(mock_widget, "Pocket created.")
+    mock_widget.tool_bridge.commit_turn_transaction.assert_called_once()
+
+    # 3. Stop aborts turn transaction
+    AICopilotDockWidget._on_stop_clicked(mock_widget)
+    mock_widget.worker.stop.assert_called_once()
+    mock_widget.tool_bridge.abort_turn_transaction.assert_called_once()
+
+
+def test_direct_tool_bridge_atomic_turn_transaction(mock_freecad):
+    import AICopilot.ui.tool_bridge as tb
+
+    doc = MagicMock()
+    mock_freecad.ActiveDocument = doc
+    tb.FreeCAD.ActiveDocument = doc
+
+    fake_server = MagicMock()
+    fake_server.partdesign_ops.pocket.return_value = {"status": "ok"}
+
+    bridge = tb.DirectToolBridge(server=fake_server)
+
+    # Begin atomic turn transaction
+    bridge.begin_turn_transaction("Create pocket")
+    assert bridge._in_turn_transaction is True
+    doc.openTransaction.assert_called_once_with("AI: Create pocket")
+
+    # Mutating tool executed during turn does NOT open/commit micro-transactions
+    doc.openTransaction.reset_mock()
+    doc.commitTransaction.reset_mock()
+    doc.abortTransaction.reset_mock()
+
+    res = bridge.execute_tool("partdesign_operations", {"operation": "pocket", "depth": 20})
+    fake_server.partdesign_ops.pocket.assert_called_once()
+    # Micro-transactions skipped:
+    doc.openTransaction.assert_not_called()
+    doc.commitTransaction.assert_not_called()
+    doc.abortTransaction.assert_not_called()
+    # Recompute called for live update
+    doc.recompute.assert_called()
+
+    # Commit turn transaction
+    bridge.commit_turn_transaction()
+    assert bridge._in_turn_transaction is False
+    doc.commitTransaction.assert_called_once()
+
+    # Now test abort turn transaction
+    doc.openTransaction.reset_mock()
+    doc.commitTransaction.reset_mock()
+    doc.abortTransaction.reset_mock()
+
+    bridge.begin_turn_transaction("Failing turn")
+    assert bridge._in_turn_transaction is True
+    bridge.abort_turn_transaction()
+    assert bridge._in_turn_transaction is False
+    doc.abortTransaction.assert_called_once()
+
+
+def test_copilot_agent_worker_429_retry(monkeypatch):
+    import time
+    from AICopilot.ui.agent_worker import CopilotAgentWorker
+
+    worker = CopilotAgentWorker(tool_bridge=MagicMock())
+    worker.api_key = "fake-key"
+
+    fake_client = MagicMock()
+    first_call = True
+
+    def fake_generate_content(model, contents, config):
+        nonlocal first_call
+        if first_call:
+            first_call = False
+            raise RuntimeError(
+                "429 RESOURCE_EXHAUSTED: Quota exceeded for metric: Please retry in 0.1s"
+            )
+        mock_resp = MagicMock()
+        mock_cand = MagicMock()
+        mock_part = MagicMock()
+        mock_part.text = "Success after 429 backoff"
+        mock_part.function_call = None
+        mock_cand.content.parts = [mock_part]
+        mock_resp.candidates = [mock_cand]
+        return mock_resp
+
+    fake_client.models.generate_content.side_effect = fake_generate_content
+
+    fake_genai = MagicMock()
+    fake_genai.Client.return_value = fake_client
+    monkeypatch.setitem(sys.modules, "google.genai", fake_genai)
+    monkeypatch.setitem(sys.modules, "google.genai.types", MagicMock())
+    monkeypatch.setattr(time, "sleep", lambda s: None)
+
+    tokens = []
+    worker.sig_token.connect(tokens.append)
+    complete = []
+    worker.sig_turn_complete.connect(complete.append)
+
+    worker._process_task({"prompt": "Make pocket", "selection": None})
+
+    assert any("Rate limit reached" in t for t in tokens)
+    assert any("Success after 429 backoff" in t for t in tokens)
+    assert len(complete) == 1
+    assert complete[0] == "Success after 429 backoff"
+
 
 
 

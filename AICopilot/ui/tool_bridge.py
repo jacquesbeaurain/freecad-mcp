@@ -42,6 +42,59 @@ class DirectToolBridge:
 
     def __init__(self, server=None):
         self._server = server
+        self._turn_active = False
+        self._turn_label = ""
+        self._in_turn_transaction = False
+        self._turn_doc = None
+
+    def begin_turn_transaction(self, label: str = "AI Copilot Turn"):
+        """Opens a single atomic undo transaction for the entire user request."""
+        self._turn_active = True
+        self._turn_label = label
+        doc = FreeCAD.ActiveDocument
+        if doc and not self._in_turn_transaction:
+            try:
+                doc.openTransaction(f"AI: {label[:40]}")
+                self._in_turn_transaction = True
+                self._turn_doc = doc
+            except Exception as e:
+                logger.debug(f"Could not open turn transaction: {e}")
+
+    def commit_turn_transaction(self):
+        """Commits the atomic turn transaction and recomputes the document."""
+        self._turn_active = False
+        if self._in_turn_transaction and self._turn_doc:
+            try:
+                self._turn_doc.commitTransaction()
+                self._turn_doc.recompute()
+                if FreeCADGui and FreeCAD.GuiUp:
+                    try:
+                        FreeCADGui.updateGui()
+                    except Exception:
+                        pass
+            except Exception as e:
+                logger.debug(f"Could not commit turn transaction: {e}")
+            finally:
+                self._in_turn_transaction = False
+                self._turn_doc = None
+
+    def abort_turn_transaction(self):
+        """Aborts the turn transaction, cleanly restoring the document to its pre-turn state."""
+        self._turn_active = False
+        if self._in_turn_transaction and self._turn_doc:
+            try:
+                self._turn_doc.abortTransaction()
+                self._turn_doc.recompute()
+                if FreeCADGui and FreeCAD.GuiUp:
+                    try:
+                        FreeCADGui.updateGui()
+                    except Exception:
+                        pass
+            except Exception as e:
+                logger.debug(f"Could not abort turn transaction: {e}")
+            finally:
+                self._in_turn_transaction = False
+                self._turn_doc = None
 
     def _get_server(self):
         if self._server:
@@ -71,10 +124,18 @@ class DirectToolBridge:
             return json.dumps({"error": "No active FreeCAD handler server available"})
 
         doc = FreeCAD.ActiveDocument
+        if doc and self._turn_active and not self._in_turn_transaction:
+            try:
+                doc.openTransaction(f"AI: {self._turn_label[:40]}")
+                self._in_turn_transaction = True
+                self._turn_doc = doc
+            except Exception as e:
+                logger.debug(f"Could not open turn transaction: {e}")
+
         has_transaction = False
 
-        # Open undo transaction if this operation mutates the document
-        if doc and tool_name in MUTATING_TOOLS:
+        # Open undo transaction if this operation mutates the document and we're not inside a turn transaction
+        if doc and tool_name in MUTATING_TOOLS and not self._in_turn_transaction:
             try:
                 op_label = args.get("operation") or tool_name
                 doc.openTransaction(f"AI: {op_label}")
@@ -107,6 +168,13 @@ class DirectToolBridge:
                             FreeCADGui.updateGui()
                         except Exception:
                             pass
+            elif self._in_turn_transaction and doc:
+                doc.recompute()
+                if FreeCADGui and FreeCAD.GuiUp:
+                    try:
+                        FreeCADGui.updateGui()
+                    except Exception:
+                        pass
 
             return result_str
 

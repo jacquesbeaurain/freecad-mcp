@@ -10,7 +10,9 @@ import html
 import json
 import logging
 import os
+import re
 import threading
+import time
 from typing import Any, Dict, List, Optional
 
 try:
@@ -36,6 +38,7 @@ GUIDELINES:
 4. Tool Calling: You have access to native FreeCAD tools (partdesign_operations, sketch_operations, cam_operations, cam_tools, spreadsheet_operations, part_operations, measurement_operations, spatial_query, and execute_python). Invoke these tools to inspect and modify the model directly.
 5. Direct Execution: If an operation isn't covered by a high-level tool, use `execute_python` to run direct FreeCAD Python code.
 6. Conciseness: Keep explanations clear, practical, and focused on CAD geometry.
+7. Efficiency & Batching: Avoid excessive back-and-forth round-trips. When creating a feature sequence from scratch (e.g. creating a body, sketch, and pad before pocketing), execute the sequence decisively or use execute_python to perform multi-step creation in one step rather than making multiple exploratory calls.
 """
 
 
@@ -220,39 +223,74 @@ class CopilotAgentWorker(QtCore.QThread):
             while not turn_done and max_turns > 0 and not self._stop_requested:
                 max_turns -= 1
 
-                # Generate content from model with automatic 503 fallback
-                try:
-                    response = client.models.generate_content(
-                        model=active_model,
-                        contents=self.history,
-                        config=config,
-                    )
-                except Exception as gen_err:
-                    err_str = str(gen_err)
-                    is_503 = (
-                        "503" in err_str
-                        or "UNAVAILABLE" in err_str
-                        or "high demand" in err_str.lower()
-                    )
-                    if is_503 and active_model != FALLBACK_MODEL:
-                        logger.warning(
-                            f"Model {active_model} returned 503; falling back to {FALLBACK_MODEL}"
-                        )
-                        self.sig_status.emit(f"Model busy, falling back to {FALLBACK_MODEL}...")
-                        fallback_notice = (
-                            f"<div style='color: #e67e22; font-size: 11px; margin: 4px 0;'>"
-                            f"⚡ <i>Notice: <b>{html.escape(active_model)}</b> is currently experiencing high demand (503). "
-                            f"Automatically retrying via <b>{FALLBACK_MODEL}</b>...</i></div>"
-                        )
-                        self.sig_token.emit(fallback_notice)
-                        active_model = FALLBACK_MODEL
+                # Generate content from model with automatic 503 fallback and 429 rate limit retry
+                response = None
+                max_429_retries = 2
+                retry_429_count = 0
+
+                while response is None and not self._stop_requested:
+                    try:
                         response = client.models.generate_content(
                             model=active_model,
                             contents=self.history,
                             config=config,
                         )
-                    else:
-                        raise
+                    except Exception as gen_err:
+                        err_str = str(gen_err)
+                        is_503 = (
+                            "503" in err_str
+                            or "UNAVAILABLE" in err_str
+                            or "high demand" in err_str.lower()
+                        )
+                        is_429 = (
+                            "429" in err_str
+                            or "RESOURCE_EXHAUSTED" in err_str
+                            or "quota" in err_str.lower()
+                        )
+
+                        if is_503 and active_model != FALLBACK_MODEL:
+                            logger.warning(
+                                f"Model {active_model} returned 503; falling back to {FALLBACK_MODEL}"
+                            )
+                            self.sig_status.emit(f"Model busy, falling back to {FALLBACK_MODEL}...")
+                            fallback_notice = (
+                                f"<div style='color: #e67e22; font-size: 11px; margin: 4px 0;'>"
+                                f"⚡ <i>Notice: <b>{html.escape(active_model)}</b> is currently experiencing high demand (503). "
+                                f"Automatically retrying via <b>{FALLBACK_MODEL}</b>...</i></div>"
+                            )
+                            self.sig_token.emit(fallback_notice)
+                            active_model = FALLBACK_MODEL
+                            continue
+
+                        elif is_429 and retry_429_count < max_429_retries:
+                            retry_429_count += 1
+                            # Extract suggested retry delay from error if available (e.g. "Please retry in 28.95s")
+                            retry_match = re.search(r"retry in\s*([\d\.]+)\s*s", err_str, re.IGNORECASE)
+                            if retry_match:
+                                wait_seconds = min(float(retry_match.group(1)) + 1.0, 45.0)
+                            else:
+                                wait_seconds = min(5.0 * (2 ** (retry_429_count - 1)), 30.0)
+
+                            wait_int = max(int(wait_seconds), 1)
+                            self.sig_token.emit(
+                                f"<div style='color: #f39c12; font-size: 11px; margin: 4px 0;'>"
+                                f"⏳ <i>Rate limit reached ({active_model} free tier quota). "
+                                f"Pausing {wait_int}s for quota window to reset, then automatically resuming...</i></div>"
+                            )
+
+                            for sec in range(wait_int, 0, -1):
+                                if self._stop_requested:
+                                    break
+                                self.sig_status.emit(f"Rate limit: resuming in {sec}s...")
+                                time.sleep(1.0)
+
+                            if self._stop_requested:
+                                raise RuntimeError("Operation stopped by user")
+
+                            self.sig_status.emit("Resuming operation...")
+                            continue
+                        else:
+                            raise
 
                 candidate = response.candidates[0] if response.candidates else None
                 if not candidate:
@@ -328,4 +366,3 @@ class CopilotAgentWorker(QtCore.QThread):
                 self.history = self.history[:history_start_len]
             self.sig_error.emit(str(exc))
             self.sig_status.emit("Error")
-            self.sig_turn_complete.emit("")
