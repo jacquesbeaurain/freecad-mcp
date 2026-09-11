@@ -915,3 +915,220 @@ def test_history_widgets_text_selectable(qapp):
     assert "$" not in turn.response_label.text()
     assert turn.response_label.textInteractionFlags() & QtCore.Qt.TextSelectableByMouse
 
+def test_copilot_settings_manager(tmp_path, monkeypatch):
+    import AICopilot.settings as s
+    test_file = str(tmp_path / "test_settings.json")
+    monkeypatch.setenv("AICOPILOT_SETTINGS_PATH", test_file)
+
+    # Defaults
+    assert s.get_setting("auto_save_on_execute") is False
+    assert s.get_setting("selected_model") == "gemini-3.6-flash"
+    assert s.get_setting("command_history") == []
+
+    # Set and persist
+    assert s.set_setting("auto_save_on_execute", True)
+    assert s.get_setting("auto_save_on_execute") is True
+
+    assert s.set_setting("selected_model", "gemini-3.7-flash")
+    assert s.get_setting("selected_model") == "gemini-3.7-flash"
+
+    # Command history
+    s.append_command_history("box 10 20 30")
+    s.append_command_history("cylinder 5 10")
+    s.append_command_history("cylinder 5 10")  # duplicate should be skipped
+    h = s.get_setting("command_history")
+    assert h == ["box 10 20 30", "cylinder 5 10"]
+
+    s.clear_command_history()
+    assert s.get_setting("command_history") == []
+
+    # Verify LF on disk
+    with open(test_file, "rb") as f:
+        raw_bytes = f.read()
+    assert b"\r" not in raw_bytes
+
+
+def test_auto_save_disabled_by_default_in_execute_python(mock_freecad, tmp_path, monkeypatch):
+    import AICopilot.settings as s
+    import AICopilot.handlers.execute_python_ops as ep
+    monkeypatch.setenv("AICOPILOT_SETTINGS_PATH", str(tmp_path / "settings.json"))
+
+    doc = MagicMock()
+    doc.FileName = "test.FCStd"
+    mock_freecad.ActiveDocument = doc
+    ep.FreeCAD = mock_freecad
+
+    ops = ep.ExecutePythonOpsHandler()
+    res = ops.execute({"code": "x = 42"})
+    assert "error" not in str(res).lower()
+    # By default, doc.save() should NOT be called
+    doc.save.assert_not_called()
+
+
+def test_auto_save_enabled_in_execute_python(mock_freecad, tmp_path, monkeypatch):
+    import AICopilot.settings as s
+    import AICopilot.handlers.execute_python_ops as ep
+    monkeypatch.setenv("AICOPILOT_SETTINGS_PATH", str(tmp_path / "settings.json"))
+    s.set_setting("auto_save_on_execute", True)
+
+    doc = MagicMock()
+    doc.FileName = "test.FCStd"
+    mock_freecad.ActiveDocument = doc
+    ep.FreeCAD = mock_freecad
+
+    ops = ep.ExecutePythonOpsHandler()
+    res = ops.execute({"code": "x = 42"})
+    assert "error" not in str(res).lower()
+    # With setting enabled, doc.save() SHOULD be called
+    doc.save.assert_called_once()
+
+
+def test_auto_save_disabled_by_default_in_save_before_risky_op(mock_freecad, tmp_path, monkeypatch):
+    import AICopilot.settings as s
+    from AICopilot.handlers.base import BaseHandler
+    monkeypatch.setenv("AICOPILOT_SETTINGS_PATH", str(tmp_path / "settings.json"))
+
+    doc = MagicMock()
+    doc.FileName = "test.FCStd"
+    mock_freecad.ActiveDocument = doc
+
+    handler = BaseHandler()
+    handler.save_before_risky_op(doc)
+    doc.save.assert_not_called()
+
+    # When enabled:
+    s.set_setting("auto_save_on_execute", True)
+    handler.save_before_risky_op(doc)
+    doc.save.assert_called_once()
+
+
+def test_chat_input_text_edit_command_history(qapp):
+    from AICopilot.ui.dock_widget import ChatInputTextEdit
+
+    edit = ChatInputTextEdit()
+    edit.set_history(["cmd 1", "cmd 2", "cmd 3"])
+
+    # User types a draft
+    edit.setPlainText("my draft")
+
+    # Navigate up (prev)
+    edit.navigate_history_prev()
+    assert edit.toPlainText() == "cmd 3"
+
+    edit.navigate_history_prev()
+    assert edit.toPlainText() == "cmd 2"
+
+    edit.navigate_history_prev()
+    assert edit.toPlainText() == "cmd 1"
+
+    # Stop at top
+    edit.navigate_history_prev()
+    assert edit.toPlainText() == "cmd 1"
+
+    # Navigate down (next)
+    edit.navigate_history_next()
+    assert edit.toPlainText() == "cmd 2"
+
+    edit.navigate_history_next()
+    assert edit.toPlainText() == "cmd 3"
+
+    # Restores draft
+    edit.navigate_history_next()
+    assert edit.toPlainText() == "my draft"
+
+
+def test_chat_input_text_edit_hotkeys(qapp):
+    from AICopilot.ui.dock_widget import ChatInputTextEdit, QtGui, QtCore
+
+    edit = ChatInputTextEdit()
+    edit.set_history(["box", "cylinder"])
+    edit.setPlainText("draft")
+
+    # Ctrl+Alt+Up -> triggers navigate_history_prev
+    event_up = QtGui.QKeyEvent(
+        QtCore.QEvent.KeyPress,
+        QtCore.Qt.Key_Up,
+        QtCore.Qt.ControlModifier | QtCore.Qt.AltModifier,
+    )
+    edit.keyPressEvent(event_up)
+    assert edit.toPlainText() == "cylinder"
+
+    # Ctrl+Alt+Down -> triggers navigate_history_next (back to draft)
+    event_down = QtGui.QKeyEvent(
+        QtCore.QEvent.KeyPress,
+        QtCore.Qt.Key_Down,
+        QtCore.Qt.ControlModifier | QtCore.Qt.AltModifier,
+    )
+    edit.keyPressEvent(event_down)
+    assert edit.toPlainText() == "draft"
+
+    # Regular Up and Down arrow keys do NOT navigate command history
+    event_regular_up = QtGui.QKeyEvent(
+        QtCore.QEvent.KeyPress,
+        QtCore.Qt.Key_Up,
+        QtCore.Qt.NoModifier,
+    )
+    edit.keyPressEvent(event_regular_up)
+    assert edit.toPlainText() == "draft"
+
+
+def test_dock_widget_settings_menu_and_history_buttons(mock_freecad, qapp, tmp_path, monkeypatch):
+    import AICopilot.settings as s
+    from AICopilot.ui.dock_widget import AICopilotDockWidget, QtCore
+
+    monkeypatch.setenv("AICOPILOT_SETTINGS_PATH", str(tmp_path / "settings.json"))
+
+    widget = AICopilotDockWidget()
+    try:
+        # Check settings gear button
+        assert widget.btn_settings.text() == "⚙"
+        assert widget.btn_settings.toolTip() == "Settings"
+        assert hasattr(widget, "settings_menu")
+        assert hasattr(widget, "act_auto_save")
+        assert widget.act_auto_save.isCheckable()
+        assert widget.act_auto_save.isChecked() is False
+
+        # Toggle auto-save via menu action
+        widget.act_auto_save.setChecked(True)
+        assert s.get_setting("auto_save_on_execute") is True
+
+        # Check Up/Down history buttons
+        assert widget.btn_hist_prev.text() == "▲"
+        assert widget.btn_hist_next.text() == "▼"
+        assert "Ctrl+Alt+Up" in widget.btn_hist_prev.toolTip()
+        assert "Ctrl+Alt+Down" in widget.btn_hist_next.toolTip()
+
+        # Setup Selection mock if needed
+        import sys
+        if "FreeCADGui" in sys.modules:
+            fc_gui = sys.modules["FreeCADGui"]
+            if not hasattr(fc_gui, "Selection"):
+                fc_gui.Selection = MagicMock()
+                fc_gui.Selection.getSelectionEx.return_value = []
+
+        # Submit prompts and test button navigation
+        widget.input_edit.setPlainText("make a cylinder")
+        widget.btn_send.click()
+        assert "make a cylinder" in s.get_setting("command_history")
+        widget._on_turn_complete("Done cylinder")
+
+        widget.input_edit.setPlainText("make a sphere")
+        widget.btn_send.click()
+        assert "make a sphere" in s.get_setting("command_history")
+        widget._on_turn_complete("Done sphere")
+
+        # Now click ▲
+        widget.btn_hist_prev.click()
+        assert widget.input_edit.toPlainText() == "make a sphere"
+        widget.btn_hist_prev.click()
+        assert widget.input_edit.toPlainText() == "make a cylinder"
+        widget.btn_hist_next.click()
+        assert widget.input_edit.toPlainText() == "make a sphere"
+        widget.btn_hist_next.click()
+        assert widget.input_edit.toPlainText() == ""
+
+        # Test model selection persistence
+        widget.model_combo.setCurrentText("gemini-3.7-flash")
+        assert s.get_setting("selected_model") == "gemini-3.7-flash"
+    finally:
+        widget.close()

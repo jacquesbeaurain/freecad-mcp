@@ -369,13 +369,14 @@ class ExecutePythonOpsHandler(BaseHandler):
 
         namespace = self._python_namespace
 
-        # Auto-save active document before executing user code.
-        # If the code triggers a crash (e.g., .check() on huge compounds,
-        # boolean ops on 1000+ solids), the saved file survives.
+        # Auto-save active document before executing user code (if enabled in settings).
+        # Default is False to prevent unwanted overwrites of user project files.
         try:
-            doc = FreeCAD.ActiveDocument
-            if doc and getattr(doc, 'FileName', ''):
-                doc.save()
+            from ..settings import get_setting
+            if get_setting('auto_save_on_execute', False):
+                doc = FreeCAD.ActiveDocument
+                if doc and getattr(doc, 'FileName', ''):
+                    doc.save()
         except Exception:
             pass  # non-fatal; proceed with execution
 

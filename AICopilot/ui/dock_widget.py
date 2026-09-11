@@ -30,6 +30,13 @@ else:
 
 from .agent_worker import CopilotAgentWorker, ToolCallRequest
 from .tool_bridge import DirectToolBridge
+from ..settings import (
+    append_command_history,
+    clear_command_history,
+    get_setting,
+    get_settings_file_path,
+    set_setting,
+)
 
 logger = logging.getLogger("AICopilot.DockWidget")
 
@@ -232,19 +239,106 @@ def format_user_friendly_error(error_input: Any) -> str:
 
 
 class ChatInputTextEdit(QtWidgets.QPlainTextEdit):
-    """Custom multi-line text edit that sends on Enter and allows Shift+Enter for newlines."""
+    """Custom multi-line text edit supporting Enter-to-send, Shift+Enter newlines,
+    and command history navigation via Ctrl+Alt+Up / Ctrl+Alt+Down.
+    """
 
     sig_submit = QtCore.Signal()
 
+    def __init__(self, parent: Optional[QtWidgets.QWidget] = None):
+        super().__init__(parent)
+        self._history: List[str] = []
+        self._history_index: int = 0
+        self._draft: str = ""
+
+    def set_history(self, history: List[str]):
+        self._history = list(history)
+        self._history_index = len(self._history)
+        self._draft = ""
+
+    def get_history(self) -> List[str]:
+        return list(self._history)
+
+    def append_history(self, prompt: str):
+        p = prompt.strip()
+        if not p:
+            return
+        if not self._history or self._history[-1] != p:
+            self._history.append(p)
+            if len(self._history) > 100:
+                self._history = self._history[-100:]
+        self._history_index = len(self._history)
+        self._draft = ""
+
+    def clear_history(self):
+        self._history.clear()
+        self._history_index = 0
+        self._draft = ""
+
+    def navigate_history_prev(self):
+        """Navigate to earlier command in history (Up / older)."""
+        if not self._history:
+            return
+        if self._history_index >= len(self._history):
+            self._draft = self.toPlainText()
+            self._history_index = len(self._history) - 1
+        elif self._history_index > 0:
+            self._history_index -= 1
+        else:
+            return
+
+        self._show_history_entry(self._history[self._history_index])
+
+    def navigate_history_next(self):
+        """Navigate to newer command in history or back to draft (Down / newer)."""
+        if not self._history:
+            return
+        if self._history_index < len(self._history) - 1:
+            self._history_index += 1
+            self._show_history_entry(self._history[self._history_index])
+        elif self._history_index == len(self._history) - 1:
+            self._history_index = len(self._history)
+            self._show_history_entry(self._draft)
+
+    def _show_history_entry(self, entry_text: str):
+        self.blockSignals(True)
+        try:
+            self.setPlainText(entry_text)
+            cursor = self.textCursor()
+            cursor.movePosition(QtGui.QTextCursor.End)
+            self.setTextCursor(cursor)
+        finally:
+            self.blockSignals(False)
+
     def keyPressEvent(self, event: QtGui.QKeyEvent):
-        if event.key() in (QtCore.Qt.Key_Return, QtCore.Qt.Key_Enter):
-            if event.modifiers() & QtCore.Qt.ShiftModifier:
+        key = event.key()
+        mods = event.modifiers()
+
+        # Ctrl+Alt+Up / Down: command history navigation (does not interfere with text editing)
+        is_ctrl = bool(mods & QtCore.Qt.ControlModifier)
+        is_alt = bool(mods & QtCore.Qt.AltModifier)
+        is_shift = bool(mods & QtCore.Qt.ShiftModifier)
+
+        if is_ctrl and is_alt:
+            if key == QtCore.Qt.Key_Up:
+                self.navigate_history_prev()
+                event.accept()
+                return
+            elif key == QtCore.Qt.Key_Down:
+                self.navigate_history_next()
+                event.accept()
+                return
+
+        # Return / Enter: send prompt (Shift+Enter inserts newline)
+        if key in (QtCore.Qt.Key_Return, QtCore.Qt.Key_Enter):
+            if is_shift:
                 super().keyPressEvent(event)
             else:
                 self.sig_submit.emit()
                 event.accept()
-        else:
-            super().keyPressEvent(event)
+            return
+
+        super().keyPressEvent(event)
 
 
 class SelectionObserver:
@@ -759,6 +853,135 @@ class ChatStreamWidget(QtWidgets.QScrollArea):
                 widget.deleteLater()
 
 
+# ── Copilot Settings Dialog ─────────────────────────────────────────
+
+class CopilotSettingsDialog(QtWidgets.QDialog):
+    """Preferences dialog for AI Copilot auto-save, model, and history options."""
+
+    def __init__(self, dock_widget: "AICopilotDockWidget", parent: Optional[QtWidgets.QWidget] = None):
+        super().__init__(parent or dock_widget)
+        self.dock_widget = dock_widget
+        self.setWindowTitle("AI Copilot Settings")
+        self.setMinimumWidth(440)
+        self.setModal(True)
+
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.setSpacing(12)
+
+        # 1. Execution & Auto-Save
+        group_exec = QtWidgets.QGroupBox("Execution and Safety", self)
+        layout_exec = QtWidgets.QVBoxLayout(group_exec)
+        layout_exec.setSpacing(6)
+
+        self.chk_auto_save = QtWidgets.QCheckBox("Auto-save active document before code execution", group_exec)
+        self.chk_auto_save.setChecked(get_setting("auto_save_on_execute", False))
+        layout_exec.addWidget(self.chk_auto_save)
+
+        lbl_note = QtWidgets.QLabel(
+            "<span style='color: gray; font-size: 10px;'>"
+            "When enabled, saves the active FreeCAD document before executing Python code or complex boolean operations. "
+            "Disabled by default to avoid unintended changes to saved files."
+            "</span>",
+            group_exec,
+        )
+        lbl_note.setWordWrap(True)
+        lbl_note.setTextFormat(QtCore.Qt.RichText)
+        layout_exec.addWidget(lbl_note)
+        layout.addWidget(group_exec)
+
+        # 2. Model & API Key
+        group_api = QtWidgets.QGroupBox("Gemini Model and API Key", self)
+        layout_api = QtWidgets.QFormLayout(group_api)
+        layout_api.setSpacing(6)
+
+        self.combo_model = QtWidgets.QComboBox(group_api)
+        self.combo_model.addItems(DEFAULT_GEMINI_MODELS)
+        curr_model = get_setting("selected_model", dock_widget.worker.model_name)
+        if curr_model and curr_model not in DEFAULT_GEMINI_MODELS:
+            self.combo_model.addItem(curr_model)
+        self.combo_model.setCurrentText(curr_model)
+        layout_api.addRow("Default Model:", self.combo_model)
+
+        self.txt_key = QtWidgets.QLineEdit(group_api)
+        self.txt_key.setEchoMode(QtWidgets.QLineEdit.Password)
+        self.txt_key.setPlaceholderText("Enter Gemini API Key...")
+        curr_key = os.environ.get("GEMINI_API_KEY", "")
+        try:
+            param = FreeCAD.ParamGet("User parameter:BaseApp/Preferences/AICopilot")
+            stored = param.GetString("GeminiApiKey", "")
+            if stored:
+                curr_key = stored
+        except Exception:
+            pass
+        if curr_key:
+            self.txt_key.setText(curr_key)
+        layout_api.addRow("API Key:", self.txt_key)
+        layout.addWidget(group_api)
+
+        # 3. Storage & History
+        group_store = QtWidgets.QGroupBox("Storage and Command History", self)
+        layout_store = QtWidgets.QVBoxLayout(group_store)
+        layout_store.setSpacing(6)
+
+        settings_path = get_settings_file_path()
+        lbl_path = QtWidgets.QLabel(f"<span style='font-size: 10px; color: gray;'>Settings file: {settings_path}</span>", group_store)
+        lbl_path.setWordWrap(True)
+        lbl_path.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
+        layout_store.addWidget(lbl_path)
+
+        hist = get_setting("command_history", [])
+        self.lbl_hist_count = QtWidgets.QLabel(f"Command history: {len(hist)} saved prompts", group_store)
+        layout_store.addWidget(self.lbl_hist_count)
+
+        btn_clear_hist = QtWidgets.QPushButton("Clear Command History", group_store)
+        btn_clear_hist.clicked.connect(self._on_clear_hist_clicked)
+        layout_store.addWidget(btn_clear_hist)
+        layout.addWidget(group_store)
+
+        # Dialog Buttons
+        btn_box = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.Save | QtWidgets.QDialogButtonBox.Cancel,
+            self,
+        )
+        btn_box.accepted.connect(self._on_save)
+        btn_box.rejected.connect(self.reject)
+        layout.addWidget(btn_box)
+
+    def _on_clear_hist_clicked(self):
+        clear_command_history()
+        self.dock_widget.input_edit.clear_history()
+        self.lbl_hist_count.setText("Command history: 0 saved prompts")
+        QtWidgets.QMessageBox.information(self, "History Cleared", "Command history has been cleared.")
+
+    def _on_save(self):
+        # Save auto-save setting
+        auto_save = self.chk_auto_save.isChecked()
+        set_setting("auto_save_on_execute", auto_save)
+        if hasattr(self.dock_widget, "act_auto_save"):
+            self.dock_widget.act_auto_save.blockSignals(True)
+            self.dock_widget.act_auto_save.setChecked(auto_save)
+            self.dock_widget.act_auto_save.blockSignals(False)
+
+        # Save model setting
+        model_name = self.combo_model.currentText().strip()
+        if model_name:
+            set_setting("selected_model", model_name)
+            self.dock_widget.model_combo.setCurrentText(model_name)
+
+        # Save API key if provided
+        key_text = self.txt_key.text().strip()
+        if key_text:
+            try:
+                param = FreeCAD.ParamGet("User parameter:BaseApp/Preferences/AICopilot")
+                param.SetString("GeminiApiKey", key_text)
+                self.dock_widget.worker.set_api_key(key_text)
+                self.dock_widget._refresh_models_from_api()
+            except Exception as e:
+                logger.warning(f"Could not save Gemini API key: {e}")
+
+        self.accept()
+
+
 # ── AI Copilot Dock Widget ───────────────────────────────────────────
 
 class AICopilotDockWidget(QtWidgets.QDockWidget):
@@ -809,7 +1032,11 @@ class AICopilotDockWidget(QtWidgets.QDockWidget):
         self.model_combo = QtWidgets.QComboBox()
         self.model_combo.setEditable(True)
         self.model_combo.addItems(DEFAULT_GEMINI_MODELS)
-        self.model_combo.setCurrentText(self.worker.model_name)
+        saved_model = get_setting("selected_model", self.worker.model_name)
+        if saved_model and saved_model not in DEFAULT_GEMINI_MODELS:
+            self.model_combo.addItem(saved_model)
+        self.model_combo.setCurrentText(saved_model)
+        self.worker.set_model_name(saved_model)
         self.model_combo.currentTextChanged.connect(self._on_model_changed)
         self.model_combo.activated.connect(lambda _: self._dismiss_error_banner())
         toolbar.addWidget(self.model_combo, stretch=1)
@@ -819,15 +1046,45 @@ class AICopilotDockWidget(QtWidgets.QDockWidget):
         self.btn_undo.clicked.connect(self._on_undo_clicked)
         toolbar.addWidget(self.btn_undo)
 
-        self.btn_settings = QtWidgets.QPushButton("⚙ Key")
-        self.btn_settings.setToolTip("Configure Gemini API Key")
-        self.btn_settings.clicked.connect(self._on_settings_clicked)
-        toolbar.addWidget(self.btn_settings)
-
         self.btn_clear = QtWidgets.QPushButton("🗑 Clear")
         self.btn_clear.setToolTip("Clear conversation history")
         self.btn_clear.clicked.connect(self._on_clear_clicked)
         toolbar.addWidget(self.btn_clear)
+
+        # Settings Gear Button with popup menu
+        self.btn_settings = QtWidgets.QToolButton()
+        self.btn_settings.setText("⚙")
+        self.btn_settings.setToolTip("Settings")
+        self.btn_settings.setPopupMode(QtWidgets.QToolButton.InstantPopup)
+        self.btn_settings.setStyleSheet("font-size: 13px; font-weight: bold; padding: 2px 6px;")
+
+        self.settings_menu = QtWidgets.QMenu(self.btn_settings)
+
+        self.act_auto_save = QtGui.QAction("Auto-Save Before Execution", self)
+        self.act_auto_save.setCheckable(True)
+        self.act_auto_save.setChecked(get_setting("auto_save_on_execute", False))
+        self.act_auto_save.setToolTip("Automatically save active document before executing code or risky operations")
+        self.act_auto_save.toggled.connect(self._on_auto_save_toggled)
+        self.settings_menu.addAction(self.act_auto_save)
+
+        self.settings_menu.addSeparator()
+
+        self.act_api_key = self.settings_menu.addAction("Gemini API Key...")
+        self.act_api_key.triggered.connect(self._on_settings_clicked)
+
+        self.act_clear_hist = self.settings_menu.addAction("Clear Command History")
+        self.act_clear_hist.triggered.connect(self._on_clear_command_history)
+
+        self.act_clear_conv = self.settings_menu.addAction("Clear Conversation")
+        self.act_clear_conv.triggered.connect(self._on_clear_clicked)
+
+        self.settings_menu.addSeparator()
+
+        self.act_open_dialog = self.settings_menu.addAction("Settings Dialog...")
+        self.act_open_dialog.triggered.connect(self._on_open_settings_dialog)
+
+        self.btn_settings.setMenu(self.settings_menu)
+        toolbar.addWidget(self.btn_settings)
 
         layout.addLayout(toolbar)
 
@@ -888,11 +1145,32 @@ class AICopilotDockWidget(QtWidgets.QDockWidget):
         input_layout.setSpacing(4)
 
         self.input_edit = ChatInputTextEdit()
-        self.input_edit.setPlaceholderText("Ask AI Copilot or request CAD action (Enter to send, Shift+Enter for newline)...")
+        self.input_edit.setPlaceholderText("Ask AI Copilot or request CAD action (Enter to send, Ctrl+Alt+Up/Down for history)...")
         self.input_edit.setFixedHeight(65)
         self.input_edit.sig_submit.connect(self._on_send_clicked)
         self.input_edit.textChanged.connect(self._on_input_text_changed)
+        self.input_edit.set_history(get_setting("command_history", []))
         input_layout.addWidget(self.input_edit, stretch=1)
+
+        # Up/Down history navigation buttons (mouse users)
+        hist_btn_col = QtWidgets.QVBoxLayout()
+        hist_btn_col.setSpacing(2)
+
+        self.btn_hist_prev = QtWidgets.QToolButton()
+        self.btn_hist_prev.setText("▲")
+        self.btn_hist_prev.setToolTip("Previous prompt (Ctrl+Alt+Up)")
+        self.btn_hist_prev.setFixedSize(24, 28)
+        self.btn_hist_prev.clicked.connect(self.input_edit.navigate_history_prev)
+        hist_btn_col.addWidget(self.btn_hist_prev)
+
+        self.btn_hist_next = QtWidgets.QToolButton()
+        self.btn_hist_next.setText("▼")
+        self.btn_hist_next.setToolTip("Next prompt (Ctrl+Alt+Down)")
+        self.btn_hist_next.setFixedSize(24, 28)
+        self.btn_hist_next.clicked.connect(self.input_edit.navigate_history_next)
+        hist_btn_col.addWidget(self.btn_hist_next)
+
+        input_layout.addLayout(hist_btn_col)
 
         btn_column = QtWidgets.QVBoxLayout()
         btn_column.setSpacing(2)
@@ -984,6 +1262,7 @@ class AICopilotDockWidget(QtWidgets.QDockWidget):
     def _on_model_changed(self, model_name: str):
         self._dismiss_error_banner()
         self.worker.set_model_name(model_name)
+        set_setting("selected_model", model_name)
 
     def _dismiss_error_banner(self):
         self.error_frame.setVisible(False)
@@ -1000,6 +1279,8 @@ class AICopilotDockWidget(QtWidgets.QDockWidget):
 
         self._last_submitted_prompt = prompt
         self._dismiss_error_banner()
+        self.input_edit.append_history(prompt)
+        append_command_history(prompt)
         self.input_edit.clear()
         self.btn_send.setEnabled(False)
         self.btn_stop.setEnabled(True)
@@ -1048,6 +1329,20 @@ class AICopilotDockWidget(QtWidgets.QDockWidget):
                 self._append_system_message(f"Could not undo: {e}")
         else:
             self._append_system_message("No active document to undo.")
+
+    def _on_auto_save_toggled(self, checked: bool):
+        set_setting("auto_save_on_execute", checked)
+        state_str = "enabled" if checked else "disabled"
+        self._append_system_message(f"Auto-save before execution {state_str}.")
+
+    def _on_clear_command_history(self):
+        clear_command_history()
+        self.input_edit.clear_history()
+        self._append_system_message("Command history cleared.")
+
+    def _on_open_settings_dialog(self):
+        dialog = CopilotSettingsDialog(self, parent=self)
+        dialog.exec()
 
     def _on_settings_clicked(self):
         curr_key = os.environ.get("GEMINI_API_KEY", "")

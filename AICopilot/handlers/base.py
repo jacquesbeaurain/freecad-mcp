@@ -265,11 +265,19 @@ class BaseHandler:
         return ''
 
     def save_before_risky_op(self, doc: FreeCAD.Document = None):
-        """Auto-save document before a potentially crashy operation.
+        """Auto-save document before a potentially crashy operation, if enabled in settings.
 
         Boolean operations on large compounds can crash FreeCAD.
-        Saving first ensures the user doesn't lose work.
+        Saving first ensures the user doesn't lose work, but is disabled by default
+        to prevent unintended document saves.
         """
+        try:
+            from ..settings import get_setting
+            if not get_setting('auto_save_on_execute', False):
+                return
+        except Exception:
+            return
+
         if doc is None:
             doc = FreeCAD.ActiveDocument
         try:
