@@ -50,6 +50,10 @@ When `part_operations` encountered the `create_box` mismatch, the Copilot gracef
 In recent FreeCAD dev builds, `CAM_MillFacing` is the modern facing operation. With native `ViewProvider` attachment in GUI mode, the operation displays its proper CAM icon, renders toolpath passes in 3D (`Visibility = True`), and opens the native operation task panel on double-click (`setEdit` returns `True`):
 ![Live CAM MillFacing with Attached ViewProvider](img/cam_millfacing_verified.png)
 
+### Live Conversation History Restored Across FreeCAD Restart
+When FreeCAD restarts, the AI Copilot automatically restores previous conversation turns from settings without requiring any UI configuration. Turn cards are reconstructed with user prompt, 3D selection badge, collapsed thoughts, tool executions, and assistant responses, while the background agent worker's conversational context is completely restored:
+![Live Restored Conversation History](img/copilot_history_restored_live.png)
+
 ---
 
 ## 3. Git Commit History in `freecad-mcp`
@@ -100,7 +104,9 @@ The implementation was delivered across clean, well-documented commits following
 | [`6976a33`](../../../commit/6976a33) | `feat(cam): add configurable max turns, safe spreadsheet inspection, and feeds/speeds defaults` | [`../AICopilot/handlers/base.py`](../AICopilot/handlers/base.py), [`../AICopilot/handlers/cam_ops.py`](../AICopilot/handlers/cam_ops.py), [`../AICopilot/handlers/cam_tool_controllers.py`](../AICopilot/handlers/cam_tool_controllers.py), [`../AICopilot/handlers/execute_python_ops.py`](../AICopilot/handlers/execute_python_ops.py), [`../AICopilot/handlers/spreadsheet_ops.py`](../AICopilot/handlers/spreadsheet_ops.py), [`../AICopilot/settings.py`](../AICopilot/settings.py), [`../AICopilot/ui/agent_worker.py`](../AICopilot/ui/agent_worker.py), [`../AICopilot/ui/dock_widget.py`](../AICopilot/ui/dock_widget.py), [`../AICopilot/ui/tool_bridge.py`](../AICopilot/ui/tool_bridge.py), [`../tests/unit/test_copilot_dock_widget.py`](../tests/unit/test_copilot_dock_widget.py) |
 | [`6dd6830`](../../../commit/6dd6830) | `docs(copilotui): update walkthrough with CAM jointing, max turns, feeds/speeds, and safe spreadsheet inspection` | [`EMBEDDED_AI_COPILOT_WALKTHROUGH.md`](EMBEDDED_AI_COPILOT_WALKTHROUGH.md), [`img/wood_cam_toolpath_live.png`](img/wood_cam_toolpath_live.png) |
 | [`b66014c`](../../../commit/b66014c) | `feat(cam): support dev build CAM_MillFacing and attach ViewProvider for GUI editability` | [`../AICopilot/compat_pathscripts.py`](../AICopilot/compat_pathscripts.py), [`../AICopilot/freecad_mcp_handler.py`](../AICopilot/freecad_mcp_handler.py), [`../AICopilot/handlers/cam_ops.py`](../AICopilot/handlers/cam_ops.py), [`../AICopilot/handlers/execute_python_ops.py`](../AICopilot/handlers/execute_python_ops.py), [`../AICopilot/ui/agent_worker.py`](../AICopilot/ui/agent_worker.py), [`../tests/unit/test_copilot_dock_widget.py`](../tests/unit/test_copilot_dock_widget.py), [`../tests/unit/test_pathscripts_compat.py`](../tests/unit/test_pathscripts_compat.py) |
-| [fd063cb](../../../commit/fd063cb) | docs(copilotui): document CAM dev build MillFacing support and ViewProvider editability in walkthrough | [EMBEDDED_AI_COPILOT_WALKTHROUGH.md](EMBEDDED_AI_COPILOT_WALKTHROUGH.md), [img/cam_millfacing_verified.png](img/cam_millfacing_verified.png) |
+| [`dced6f7`](../../../commit/dced6f7) | `docs(copilotui): document CAM dev build MillFacing support and ViewProvider editability in walkthrough` | [`EMBEDDED_AI_COPILOT_WALKTHROUGH.md`](EMBEDDED_AI_COPILOT_WALKTHROUGH.md), [`img/cam_millfacing_verified.png`](img/cam_millfacing_verified.png) |
+| [`edbeee1`](../../../commit/edbeee1) | `feat(copilotui): serialize conversation history into settings and restore on startup` | [`../AICopilot/freecad_mcp_handler.py`](../AICopilot/freecad_mcp_handler.py), [`../AICopilot/settings.py`](../AICopilot/settings.py), [`../AICopilot/ui/agent_worker.py`](../AICopilot/ui/agent_worker.py), [`../AICopilot/ui/dock_widget.py`](../AICopilot/ui/dock_widget.py), [`../tests/unit/test_copilot_dock_widget.py`](../tests/unit/test_copilot_dock_widget.py) |
+| [c1b3634](../../../commit/c1b3634) | docs(copilotui): document conversation history serialization and restoration in walkthrough | [EMBEDDED_AI_COPILOT_WALKTHROUGH.md](EMBEDDED_AI_COPILOT_WALKTHROUGH.md), [img/copilot_history_restored_live.png](img/copilot_history_restored_live.png) |
 ---
 
 ## 4. Problem Diagnostics & Root Cause Fixes
@@ -657,3 +663,53 @@ eleasein\python.exe" -m pytest tests/unit/test_copilot_dock_widget.py tests/uni
 - Verified `test_get_op_viewprovider_resources`: validates dynamic resolution of `CommandResources` from `Path.Op.Gui.*`.
 - Verified `test_path_op_face_resolves_to_millfacing_when_available`: validates dev build `MillFacing` prioritization.
 - Live FreeCAD verification: `cam_operations(operation="face", job_name="Job", cut_mode="Climb", stepover=50)` created `MillFacing` in `Job`, attached `Path.Op.Gui.Base.ViewProvider`, rendered 24 toolpath passes along the entire top workpiece face in 3D, and successfully opened and reset the task panel editor via `setEdit`.
+
+## 13. Conversation History Serialization & Automatic Restoration
+
+### 1. Problem & Objective
+- **Problem**: In previous implementations, closing and reopening FreeCAD (or reloading the Mod) caused all conversation history in the AI Copilot to be lost. The UI started empty, and the background LLM agent had zero memory of previous turns, instructions, or geometry created in that session.
+- **Objective**: Serialize the entire conversation history into `settings.json` so that when FreeCAD is restarted, both the visual conversation cards in the UI and the underlying LLM agent conversational context are completely restored without exposing any unnecessary options in the Settings UI.
+
+### 2. Architectural Implementation
+
+#### A. Settings Schema Extension (`AICopilot/settings.py`)
+- Added `"conversation_history": []` to `DEFAULT_SETTINGS`.
+- Implemented `load_conversation_history() -> List[Dict[str, Any]]`: returns the list of saved turn dictionaries.
+- Implemented `save_conversation_history(history: List[Dict[str, Any]], max_turns: int = 50) -> bool`: persists turns to `settings.json` capped at `max_turns` (default 50) with pure Unix LF formatting.
+- Implemented `clear_conversation_history() -> bool`: clears the persisted conversation history.
+
+#### B. Agent Worker History Serialization (`AICopilot/ui/agent_worker.py`)
+- Implemented `get_history_dicts() -> List[Dict[str, Any]]`: thread-safely converts `self.history` items (`types.Content` or dicts) into JSON-serializable dictionaries via `to_json_dict()` / `model_dump()`.
+- Implemented `get_recent_turn_contents(start_index: int) -> List[Dict[str, Any]]`: returns new `Content` objects created during the most recent conversational turn.
+- Implemented `load_history_dicts(history_dicts: List[Dict[str, Any]])`: reconstructs `types.Content` objects via `types.Content.model_validate(item)` so the background worker retains full conversational context across FreeCAD restarts.
+
+#### C. UI Turn State Tracking & Restoration (`AICopilot/ui/dock_widget.py`)
+- **Turn Data Accumulation**:
+  - `_turns_data`: list of all completed turn dictionaries.
+  - `_current_turn_data`: active turn dictionary initialized in `_on_send_clicked` with user prompt, selection badge, and timestamp.
+  - Signal handlers (`_on_thought_received`, `_on_tool_started`, `_on_tool_finished`, `_on_notice_received`, `_on_token_received`) record their payload directly into `_current_turn_data`.
+  - `_on_turn_complete`: records final response, metrics, and new `agent_contents` from `worker.get_recent_turn_contents()`, appends to `_turns_data`, and calls `_persist_conversation_history()`.
+  - `_on_error`: records error message, appends to `_turns_data`, and calls `_persist_conversation_history()`.
+  - `_on_clear_clicked`: clears in-memory turns, clears worker history, and calls `clear_conversation_history()`.
+- **Restoration on Startup**:
+  - `_restore_conversation_history()`: runs on `AICopilotDockWidget` initialization.
+  - Reconstructs `TurnCardWidget` instances for each saved turn with prompt, selection badge, collapsed thought sections, collapsed work sections (with tool calls, results, and notices), and final response/error.
+  - Restores `self.worker.history` with all saved `agent_contents`.
+  - Displays: `ℹ Restored N previous turns. Context is preserved. Ready for prompts.`
+
+### 3. Visual Verification
+
+| Live Restored Conversation History in FreeCAD Dock Widget |
+|---|
+| ![Live Restored Conversation History](img/copilot_history_restored_live.png) |
+
+### 4. Verification Results
+- All 69 unit tests passed:
+  ```powershell
+  & "D:\repos\oth\FreeCAD\build\release\bin\python.exe" -m pytest tests/unit/test_copilot_dock_widget.py tests/unit/test_pathscripts_compat.py
+  ```
+- Verified `test_conversation_history_settings_helpers`: verified loading, saving, max turn capping, LF preservation, and clearing.
+- Verified `test_agent_worker_history_serialization_roundtrip`: verified `types.Content` serialization and roundtrip deserialization.
+- Verified `test_dock_widget_conversation_history_persistence_and_restore`: verified turn persistence across mock sessions, card reconstruction, and collapsed thought/work sections.
+- Verified `test_dock_widget_clear_history_clears_settings`: verified that clicking Clear purges both in-memory turns and `settings.json`.
+- Verified live in FreeCAD: captured high-resolution screenshot `copilot_history_restored_live.png` showing restored conversation card and preserved context.
