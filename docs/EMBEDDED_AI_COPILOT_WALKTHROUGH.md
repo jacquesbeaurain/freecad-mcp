@@ -92,6 +92,8 @@ The implementation was delivered across clean, well-documented commits following
 | [`2199d39`](../../../commit/2199d39) | `docs(copilotui): update walkthrough with settings, gear menu, command history, and CAM bridge` | [`EMBEDDED_AI_COPILOT_WALKTHROUGH.md`](EMBEDDED_AI_COPILOT_WALKTHROUGH.md), [`img/copilot_gear_menu_popup.png`](img/copilot_gear_menu_popup.png), [`img/copilot_settings_dialog_gui.png`](img/copilot_settings_dialog_gui.png), [`img/copilot_settings_history_gui.png`](img/copilot_settings_history_gui.png) |
 | [`d6c857c`](../../../commit/d6c857c) | `docs(copilotui): align walkthrough commit history table with current branch hashes` | [`EMBEDDED_AI_COPILOT_WALKTHROUGH.md`](EMBEDDED_AI_COPILOT_WALKTHROUGH.md) |
 | [`d899a5d`](../../../commit/d899a5d) | `fix(ui): resolve startup import error for dock widget and ensure dock visibility on launch` | [`../AICopilot/InitGui.py`](../AICopilot/InitGui.py), [`../AICopilot/handlers/base.py`](../AICopilot/handlers/base.py), [`../AICopilot/handlers/execute_python_ops.py`](../AICopilot/handlers/execute_python_ops.py), [`../AICopilot/ui/dock_widget.py`](../AICopilot/ui/dock_widget.py) |
+| [`e4f0c21`](../../../commit/e4f0c21) | `docs(copilotui): document startup import fix and dock visibility in walkthrough` | [`EMBEDDED_AI_COPILOT_WALKTHROUGH.md`](EMBEDDED_AI_COPILOT_WALKTHROUGH.md), [`img/copilot_dock_visible_live.png`](img/copilot_dock_visible_live.png) |
+| [`6976a33`](../../../commit/6976a33) | `feat(cam): add configurable max turns, safe spreadsheet inspection, and feeds/speeds defaults` | [`../AICopilot/handlers/base.py`](../AICopilot/handlers/base.py), [`../AICopilot/handlers/cam_ops.py`](../AICopilot/handlers/cam_ops.py), [`../AICopilot/handlers/cam_tool_controllers.py`](../AICopilot/handlers/cam_tool_controllers.py), [`../AICopilot/handlers/execute_python_ops.py`](../AICopilot/handlers/execute_python_ops.py), [`../AICopilot/handlers/spreadsheet_ops.py`](../AICopilot/handlers/spreadsheet_ops.py), [`../AICopilot/settings.py`](../AICopilot/settings.py), [`../AICopilot/ui/agent_worker.py`](../AICopilot/ui/agent_worker.py), [`../AICopilot/ui/dock_widget.py`](../AICopilot/ui/dock_widget.py), [`../AICopilot/ui/tool_bridge.py`](../AICopilot/ui/tool_bridge.py), [`../tests/unit/test_copilot_dock_widget.py`](../tests/unit/test_copilot_dock_widget.py) |
 ---
 
 ## 4. Problem Diagnostics & Root Cause Fixes
@@ -516,3 +518,72 @@ AI Copilot Dock Widget initialization skipped: attempted relative import beyond 
   & "D:\repos\oth\FreeCAD\build\release\bin\python.exe" -m pytest tests/unit/test_copilot_dock_widget.py tests/unit/test_pathscripts_compat.py
   ```
 - Live in-process FreeCAD verification confirmed that the dock widget is created, attached to the right dock area, and displayed (`isVisible: True`, `geometry: QRect(1961, 99, 599, 1023)`).
+
+---
+
+## 17. CAM Facing/Jointing, Configurable Max Turns, Feeds & Speeds Defaults, and Safe Spreadsheet Inspection
+
+### 1. Problem Diagnostics & Root Causes
+When executing complex CAM tasks against parametric models (such as jointing the top surface of a lumber model parameterized via a Spreadsheet), the embedded Copilot encountered several failure modes:
+1. **Silent Termination with Zero Response Notes**:
+   - `agent_worker.py` enforced a hardcoded limit of `max_turns = 10`.
+   - For complex tasks involving discovery, spreadsheet lookup, tool creation, job setup, and facing, the agent exhausted 10 turns on setup queries.
+   - When the while loop exited without `turn_done == True`, `accumulated_response` remained empty (`""`), causing the worker thread to silently exit without outputting a summary or error explanation.
+2. **Spreadsheet `get()` Exception on Unassigned Cells**:
+   - FreeCAD's underlying C++ `Spreadsheet::Sheet` raises `ValueError: Invalid cell address or property: C1` when calling `sheet.get("C1")` on an unassigned cell.
+   - The agent was unable to safely probe cell addresses.
+3. **Missing `Expressions` Attribute on FreeCAD Objects**:
+   - Scripts calling `obj.Expressions` raised `AttributeError: 'PrimitivePy' object has no attribute 'Expressions'`.
+   - In FreeCAD, parametric expression bindings reside exclusively on `obj.ExpressionEngine`.
+4. **Zero Toolpath Passes on Narrow Workpieces (`ClearEdges`)**:
+   - In FreeCAD CAM `MillFace`, pocketing logic confines the cutter geometry strictly inside workpiece boundary contours unless `ClearEdges = True`.
+   - When jointing narrow boards (e.g. 12mm thickness with a 1/2" [12.7mm] router bit), `ClearEdges = False` resulted in zero valid toolpath passes because the bit was wider than the workpiece face.
+5. **Missing Feeds and Speeds on Default Tool Controllers**:
+   - Default ToolControllers created in FreeCAD initialize horizontal and vertical feed rates to `0.0 mm/s`, generating `CycleTime: Tool Feedrate Error` in CAM post-processing and simulation.
+
+### 2. Architectural Solutions
+
+#### A. Configurable Max Turns & Graceful Synthesis Fallback
+- **Settings Persistence**: Added `"max_turns": 30` to `DEFAULT_SETTINGS` in [`AICopilot/settings.py`](../AICopilot/settings.py).
+- **Settings UI**: Added a dedicated `QSpinBox` (range 5 to 100 turns, step 5, default 30) to `CopilotSettingsDialog` in [`AICopilot/ui/dock_widget.py`](../AICopilot/ui/dock_widget.py).
+- **Graceful Termination Fallback**: In [`AICopilot/ui/agent_worker.py`](../AICopilot/ui/agent_worker.py), if `turn_count >= max_turns` and the agent has not completed its answer, the worker dispatches an immediate summary prompt asking the model to summarize the actions taken, current state, and next steps so the user is never left without a final response.
+
+#### B. Safe Spreadsheet Inspection (`inspect_sheet`)
+- **Single-Call Inspection**: Added `inspect_sheet` (aliased as `list_cells`) to [`AICopilot/handlers/spreadsheet_ops.py`](../AICopilot/handlers/spreadsheet_ops.py) and [`AICopilot/ui/tool_bridge.py`](../AICopilot/ui/tool_bridge.py). In a single invocation, it scans all populated cells via `getNonEmptyCells()` or `getUsedRange()`, returning cell address, alias, stored formula/expression, and evaluated value.
+- **Safe `get_cell`**: Hardened `get_cell` so unassigned cells return `{"cell": cell, "value": None, "formula": ""}` instead of raising `ValueError`.
+- **Parameter Aliasing**: Supported `sheet_name` and `spreadsheet_name` interchangeably across all spreadsheet operations.
+
+#### C. Pre-Injected Python Helper Environment
+- Pre-loaded two CAD helper functions into the execution namespace in [`AICopilot/handlers/execute_python_ops.py`](../AICopilot/handlers/execute_python_ops.py):
+  - `get_spreadsheet_cells(sheet=None)`: returns a dictionary of all active cells, formulas, aliases, and values.
+  - `get_expressions(obj)`: returns all parametric expression bindings from `obj.ExpressionEngine`.
+
+#### D. Intelligent Material- and Diameter-Aware Feeds & Speeds Heuristic
+- Implemented `get_default_feeds_and_speeds(tool_type, diameter, material, flutes)` in [`AICopilot/handlers/base.py`](../AICopilot/handlers/base.py):
+  - Calculates spindle RPM from surface cutting speed ($V_c$ in m/min) via $	ext{RPM} = rac{V_c 	imes 1000}{\pi 	imes D}$, clamped to 4,000–18,000 RPM and rounded to the nearest 500 RPM.
+  - Calculates horizontal feed rate from chip load per tooth ($f_z$ in mm/tooth) via $	ext{Feed} = 	ext{RPM} 	imes 	ext{flutes} 	imes f_z$.
+  - Adjusts vertical plunge feed rate as a material-calibrated ratio (20% for Steel, 25% for Aluminum, 35% for Wood/Plastics).
+  - Automatically converts feeds to FreeCAD's internal base unit of `mm/s` for `PropertySpeed` assignment (`mm_min / 60.0`).
+- Integrated into `add_tool_controller` ([`AICopilot/handlers/cam_tool_controllers.py`](../AICopilot/handlers/cam_tool_controllers.py)) and `create_job` ([`AICopilot/handlers/cam_ops.py`](../AICopilot/handlers/cam_ops.py)).
+
+#### E. CAM Face & Model Clone Wiring
+- In [`AICopilot/handlers/cam_ops.py`](../AICopilot/handlers/cam_ops.py):
+  - Corrected `_create_path_op` base wiring to resolve the cloned workpiece model inside `job.Model.Group` (`Clone`), rather than binding to the external PartDesign Body.
+  - Set `ClearEdges = True` by default on `MillFace` operations so facing and jointing cuts cleanly clear board edges.
+  - Supported `step_over` and `step_down` parameter aliases.
+
+### 3. Visual Verification
+
+| Live CAM Job & MillFace Toolpath on Wood Model (`surface_and_joint.FCStd`) |
+|---|
+| ![Live CAM Job and MillFace Toolpath](img/wood_cam_toolpath_live.png) |
+
+### 4. Verification Results
+- All 62 unit tests passed:
+  ```powershell
+  & "D:epos\oth\FreeCADuildeleasein\python.exe" -m pytest tests/unit/test_copilot_dock_widget.py tests/unit/test_pathscripts_compat.py
+  ```
+- Verified `test_default_feeds_and_speeds_heuristic`: verified RPM clamping, feedrate ratios, and unit conversions for Wood, Aluminum, and Steel.
+- Verified `test_settings_max_turns_persistence`: verified default 30 turns and persistence.
+- Verified `test_spreadsheet_inspect_sheet_and_safe_get`: verified single-call inspection and safe `get_cell` on unassigned cells.
+- Verified live FreeCAD CAM generation: `Job` created with `MillFace` generating 416 toolpath commands and populated feeds/speeds.
