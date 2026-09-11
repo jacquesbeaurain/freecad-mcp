@@ -1228,3 +1228,113 @@ def test_spreadsheet_inspect_sheet_and_safe_get(mock_freecad):
     res_empty = handler.get_cell({"sheet_name": "Spreadsheet", "cell": "C1"})
     data_empty = json.loads(res_empty)
     assert data_empty["value"] is None
+
+
+def test_cam_millfacing_viewprovider_and_parameter_wiring(mock_freecad):
+    """Verify CAMOpsHandler.face wires modern MillFacing parameters and attaches ViewProvider."""
+    import AICopilot.handlers.cam_ops as co
+    import AICopilot.handlers.base as b
+    b.FreeCAD = mock_freecad
+    co.FreeCAD = mock_freecad
+    mock_freecad.GuiUp = True
+
+    job = MagicMock()
+    job.Name = "Job"
+    job.Label = "Job"
+    job.TypeId = "Path::FeaturePython"
+    job_vo = MagicMock()
+    job_vo.Proxy = None
+    job.ViewObject = job_vo
+    job.Model = MagicMock()
+    clone_m = MagicMock()
+    clone_m.Label = "Model-Wood"
+    job.Model.Group = [clone_m]
+
+    op = MagicMock()
+    op.Name = "MillFacing"
+    op.Label = "MillFacing"
+    op.TypeId = "Path::FeaturePython"
+    # MillFacing does NOT have Base attribute
+    if hasattr(op, "Base"):
+        delattr(op, "Base")
+    op_vo = MagicMock()
+    op_vo.Proxy = None
+    op_vo.Visibility = False
+    op.ViewObject = op_vo
+    op.StepOver = 25
+    op.CutMode = "Conventional"
+    op.ClearingPattern = "ZigZag"
+
+    doc = MagicMock()
+    doc.getObject.side_effect = lambda n: job if n == "Job" else (clone_m if n == "Clone" else None)
+    mock_freecad.ActiveDocument = doc
+
+    handler = co.CAMOpsHandler()
+    fake_create = MagicMock(return_value=op)
+
+    # Mock get_op_create to return our fake factory
+    fake_res = MagicMock()
+    fake_res.name = "MillFacing"
+    fake_res.pixmap = "CAM_Face"
+
+    fake_vp_cls = MagicMock()
+    mock_vp_inst = MagicMock()
+    mock_vp_inst.setEdit = MagicMock(return_value=True)
+    fake_vp_cls.return_value = mock_vp_inst
+
+    mock_base = types.ModuleType("Path.Op.Gui.Base")
+    mock_base.ViewProvider = fake_vp_cls
+
+    with patch.dict(sys.modules, {
+        "Path": types.ModuleType("Path"),
+        "Path.Op": types.ModuleType("Path.Op"),
+        "Path.Op.Gui": types.ModuleType("Path.Op.Gui"),
+        "Path.Op.Gui.Base": mock_base,
+    }):
+        with patch.object(co, "get_op_create", return_value=fake_create):
+            with patch.object(co, "get_op_viewprovider_resources", return_value=fake_res):
+                res_str = handler.face({
+                    "job_name": "Job",
+                    "cut_mode": "Climb",
+                    "clearing_pattern": "Directional",
+                    "step_over": 50,
+                    "step_down": 0.5,
+                    "pass_extension": 3.0,
+                    "stock_extension": 1.0,
+                })
+
+                assert "Created" in res_str
+                # Verified parameter assignments
+                assert op.CutMode == "Climb"
+                assert op.ClearingPattern == "Directional"
+                assert op.StepOver == 50
+                assert op.StepDown == 0.5
+                assert op.PassExtension == 3.0
+                assert op.StockExtension == 1.0
+                # Verified ViewProvider attachment and Visibility
+                assert op_vo.Visibility is True
+                assert op_vo.Proxy == mock_vp_inst
+                assert op_vo.Proxy.setEdit(op_vo, 0) is True
+
+
+def test_get_op_viewprovider_resources():
+    """Verify get_op_viewprovider_resources resolves CommandResources from Gui module."""
+    from AICopilot.compat_pathscripts import get_op_viewprovider_resources
+
+    fake_gui_mod = types.ModuleType("Path.Op.Gui.MillFacing")
+    fake_cmd = MagicMock()
+    fake_res = MagicMock()
+    fake_res.name = "MillFacing"
+    fake_cmd.res = fake_res
+    fake_gui_mod.Command = fake_cmd
+
+    sys.modules["Path.Op.Gui.MillFacing"] = fake_gui_mod
+    try:
+        res = get_op_viewprovider_resources("facing")
+        assert res == fake_res
+        assert res.name == "MillFacing"
+
+        res_face = get_op_viewprovider_resources("face")
+        assert res_face == fake_res
+    finally:
+        sys.modules.pop("Path.Op.Gui.MillFacing", None)

@@ -33,8 +33,8 @@ class TestCAMModuleCompat(unittest.TestCase):
         self.assertIn("PathSurface", _PATHSCRIPTS_REDIRECTS)
         self.assertEqual(_PATHSCRIPTS_REDIRECTS["PathSurface"], "Path.Op.Surface")
         # Intuitive Path.Op aliases
-        self.assertEqual(_CAM_MODULE_REDIRECTS["Path.Op.Face"], "Path.Op.MillFace")
-        self.assertEqual(_CAM_MODULE_REDIRECTS["Path.Op.Facing"], "Path.Op.MillFace")
+        self.assertIn(_CAM_MODULE_REDIRECTS["Path.Op.Face"], ("Path.Op.MillFacing", "Path.Op.MillFace", ("Path.Op.MillFacing", "Path.Op.MillFace")))
+        self.assertIn(_CAM_MODULE_REDIRECTS["Path.Op.Facing"], ("Path.Op.MillFacing", "Path.Op.MillFace", ("Path.Op.MillFacing", "Path.Op.MillFace")))
         self.assertEqual(_CAM_MODULE_REDIRECTS["Path.Op.Drill"], "Path.Op.Drilling")
         self.assertEqual(_CAM_MODULE_REDIRECTS["Path.Op.Contour"], "Path.Op.Profile")
         # Root shortcuts
@@ -94,6 +94,33 @@ class TestCAMModuleCompat(unittest.TestCase):
             self.assertEqual(fake_path_op.Face, fake_millface)
         finally:
             sys.modules.pop("Path.Op.MillFace", None)
+            sys.modules.pop("Path.Op.Face", None)
+            sys.modules.pop("Path.Op", None)
+            sys.modules.pop("Path", None)
+
+    def test_path_op_face_resolves_to_millfacing_when_available(self):
+        fake_path = types.ModuleType("Path")
+        fake_path.__path__ = []
+        sys.modules["Path"] = fake_path
+
+        fake_path_op = types.ModuleType("Path.Op")
+        fake_path_op.__path__ = []
+        sys.modules["Path.Op"] = fake_path_op
+
+        fake_millfacing = types.ModuleType("Path.Op.MillFacing")
+        fake_millfacing.Create = lambda *args: "fake_millfacing_create"
+        sys.modules["Path.Op.MillFacing"] = fake_millfacing
+
+        import AICopilot.compat_pathscripts as cp
+        cp._installed = False
+        cp.install_pathscripts_compat()
+
+        try:
+            import Path.Op.Face as PathFace
+            self.assertEqual(PathFace, fake_millfacing)
+            self.assertEqual(PathFace.Create(), "fake_millfacing_create")
+        finally:
+            sys.modules.pop("Path.Op.MillFacing", None)
             sys.modules.pop("Path.Op.Face", None)
             sys.modules.pop("Path.Op", None)
             sys.modules.pop("Path", None)

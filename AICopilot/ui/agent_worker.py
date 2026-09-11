@@ -45,8 +45,8 @@ GUIDELINES:
      • Object Expressions: In FreeCAD Python, parametric expressions on document objects reside in `obj.ExpressionEngine` (a list of `(property_name, expression_string)` tuples), NOT `obj.Expressions`.
    - For CAM (CNC) Operations: ALWAYS prefer `cam_operations` and `cam_tools` over raw scripting!
      • Create Job: `cam_operations(operation="create_job", base_object="<model_name>")` (e.g. base_object="Wood").
-     • Facing / Jointing: `cam_operations(operation="face", job_name="Job", base_object="<model_name>", faces=["<top_face>"], cut_mode="Climb", step_over=50, step_down=0.5, clear_edges=True)`.
-       Note: For facing/jointing narrow stock, `clear_edges=True` is vital so the cutter clears the stock boundary.
+     • Facing / Jointing: `cam_operations(operation="face", job_name="Job", base_object="<model_name>", faces=["<top_face>"], cut_mode="Climb", clearing_pattern="Directional", step_over=50, step_down=0.5, clear_edges=True)`.
+       Note: In FreeCAD dev builds, the facing tool is `CAM_MillFacing` (supports cut_mode="Climb" and clearing_pattern="Directional" or "ZigZag"). In 1.1.x, it was `CAM_MillFace` (where `clear_edges=True` was vital). Both are handled automatically.
      • Add Operations: `cam_operations(operation="surface", job_name="Job")` for 3D surfacing, `operation="profile"` for contours, `operation="pocket"` for pockets, `operation="drilling"` for holes.
      • Tool Library: `cam_tools(operation="create_tool", name="<tool_name>", tool_type="endmill", diameter=12.7, cutting_edge_height=25.0)`.
      • In FreeCAD 1.0+, CAM modules live under `Path.Main.Job` and `Path.Op.*` (do not import legacy `PathScripts`).

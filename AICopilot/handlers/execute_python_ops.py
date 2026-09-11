@@ -221,6 +221,42 @@ def _cad_get_expressions(obj):
     return getattr(obj, "ExpressionEngine", [])
 
 
+def _cad_attach_cam_viewprovider(op, job=None):
+    """Ensure a CAM operation has its ViewProvider attached in GUI mode so it can be edited and seen in 3D."""
+    if not (FreeCAD.GuiUp and hasattr(op, "ViewObject") and op.ViewObject):
+        return
+    try:
+        if job is None and hasattr(op, "parentJob"):
+            job = op.parentJob
+        if job and hasattr(job, "ViewObject") and job.ViewObject and not job.ViewObject.Proxy:
+            try:
+                import Path.Main.Gui.Job as JobGui
+                job.ViewObject.Proxy = JobGui.ViewProvider(job.ViewObject)
+                try:
+                    job.ViewObject.addExtension("Gui::ViewProviderGroupExtensionPython")
+                except Exception:
+                    pass
+            except Exception:
+                pass
+        import importlib, Path.Op.Gui.Base as PathOpGui
+        name = getattr(op, "Label", op.Name)
+        for cand in ("MillFacing", "MillFace", "Profile", "PocketShape", "Pocket", "Drilling", "Adaptive", "Surface"):
+            if cand.lower() in name.lower() or cand.lower() in getattr(getattr(op, "Proxy", None), "__class__", type(None)).__name__.lower():
+                try:
+                    mod = importlib.import_module(f"Path.Op.Gui.{cand}")
+                    cmd = getattr(mod, "Command", None)
+                    if cmd and hasattr(cmd, "res"):
+                        vp = PathOpGui.ViewProvider(op.ViewObject, cmd.res)
+                        vp.deleteOnReject = False
+                        op.ViewObject.Proxy = vp
+                        op.ViewObject.Visibility = True
+                        break
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+
 def _cad_pad_sketch(sketch, length=10.0, name="Pad", reversed=False):
     """Pad a sketch within its PartDesign Body."""
     doc = getattr(sketch, "Document", None) or FreeCAD.ActiveDocument
@@ -385,9 +421,12 @@ class ExecutePythonOpsHandler(BaseHandler):
             from ..compat_pathscripts import get_job_create
         except Exception:
             try:
-                from compat_pathscripts import get_job_create
+                from AICopilot.compat_pathscripts import get_job_create
             except Exception:
-                get_job_create = None
+                try:
+                    from compat_pathscripts import get_job_create
+                except Exception:
+                    get_job_create = None
 
         if get_job_create is not None:
             try:
@@ -409,6 +448,7 @@ class ExecutePythonOpsHandler(BaseHandler):
         self._python_namespace["get_spreadsheet_cells"] = _cad_get_spreadsheet_cells
         self._python_namespace["inspect_spreadsheet"] = _cad_get_spreadsheet_cells
         self._python_namespace["get_expressions"] = _cad_get_expressions
+        self._python_namespace["attach_cam_viewprovider"] = _cad_attach_cam_viewprovider
         self._python_namespace["recompute"] = lambda: FreeCAD.ActiveDocument.recompute() if FreeCAD.ActiveDocument else None
 
         namespace = self._python_namespace

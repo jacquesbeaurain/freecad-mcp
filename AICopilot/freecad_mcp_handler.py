@@ -1801,6 +1801,14 @@ class FreeCADSocketServer:
             return new_mod
 
         try:
+            # Reload compat_pathscripts first if already imported
+            for cp_name in ('compat_pathscripts', 'AICopilot.compat_pathscripts'):
+                if cp_name in sys.modules and sys.modules[cp_name]:
+                    try:
+                        _reload(cp_name, sys.modules[cp_name])
+                    except Exception:
+                        pass
+
             # Reload base first (other handlers inherit from it)
             import handlers.base as _base
             _reload('handlers.base', _base)

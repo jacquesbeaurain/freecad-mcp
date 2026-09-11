@@ -29,8 +29,10 @@ logger = logging.getLogger(__name__)
 # Complete mapping of CAM module redirects (source full module path -> target full module path)
 _CAM_MODULE_REDIRECTS = {
     # --- Path.Op aliases and intuitive operation names ---
-    "Path.Op.Face": "Path.Op.MillFace",
-    "Path.Op.Facing": "Path.Op.MillFace",
+    "Path.Op.Face": ("Path.Op.MillFacing", "Path.Op.MillFace"),
+    "Path.Op.Facing": ("Path.Op.MillFacing", "Path.Op.MillFace"),
+    "Path.Op.MillFacing": "Path.Op.MillFacing",
+    "Path.Op.MillFace": "Path.Op.MillFace",
     "Path.Op.Drill": "Path.Op.Drilling",
     "Path.Op.DrillHoles": "Path.Op.Drilling",
     "Path.Op.Pocketing": "Path.Op.Pocket",
@@ -59,9 +61,10 @@ _CAM_MODULE_REDIRECTS = {
     "Path.Pocket": "Path.Op.Pocket",
     "Path.Drilling": "Path.Op.Drilling",
     "Path.Drill": "Path.Op.Drilling",
+    "Path.MillFacing": "Path.Op.MillFacing",
     "Path.MillFace": "Path.Op.MillFace",
-    "Path.Face": "Path.Op.MillFace",
-    "Path.Facing": "Path.Op.MillFace",
+    "Path.Face": ("Path.Op.MillFacing", "Path.Op.MillFace"),
+    "Path.Facing": ("Path.Op.MillFacing", "Path.Op.MillFace"),
     "Path.Surface": "Path.Op.Surface",
     "Path.Adaptive": "Path.Op.Adaptive",
     "Path.Helix": "Path.Op.Helix",
@@ -84,10 +87,10 @@ _CAM_MODULE_REDIRECTS = {
     "PathScripts.PathSurface": "Path.Op.Surface",
     "PathScripts.PathSurfaceMilling": "Path.Op.Surface",
     "PathScripts.PathHelix": "Path.Op.Helix",
-    "PathScripts.PathMillFace": "Path.Op.MillFace",
-    "PathScripts.PathMillFacing": "Path.Op.MillFacing",
-    "PathScripts.PathFace": "Path.Op.MillFace",
-    "PathScripts.PathFacing": "Path.Op.MillFace",
+    "PathScripts.PathMillFacing": ("Path.Op.MillFacing", "Path.Op.MillFace"),
+    "PathScripts.PathMillFace": ("Path.Op.MillFacing", "Path.Op.MillFace"),
+    "PathScripts.PathFace": ("Path.Op.MillFacing", "Path.Op.MillFace"),
+    "PathScripts.PathFacing": ("Path.Op.MillFacing", "Path.Op.MillFace"),
     "PathScripts.PathSlot": "Path.Op.Slot",
     "PathScripts.PathEngrave": "Path.Op.Engrave",
     "PathScripts.PathVcarve": "Path.Op.Vcarve",
@@ -103,7 +106,7 @@ _CAM_MODULE_REDIRECTS = {
 
 # Legacy dictionary alias for backward compatibility
 _PATHSCRIPTS_REDIRECTS = {
-    k.split(".", 1)[1]: v for k, v in _CAM_MODULE_REDIRECTS.items() if k.startswith("PathScripts.")
+    k.split(".", 1)[1]: (v[0] if isinstance(v, tuple) else v) for k, v in _CAM_MODULE_REDIRECTS.items() if k.startswith("PathScripts.")
 }
 
 # Mapping of CAM operation names to candidate module paths (modern, fallbacks, legacy)
@@ -114,8 +117,12 @@ _OP_MODULE_MAP = {
     "drilling": ("Path.Op.Drilling", "Path.Op.Drill", "PathScripts.PathDrilling"),
     "drill": ("Path.Op.Drilling", "Path.Op.Drill", "PathScripts.PathDrilling"),
     "adaptive": ("Path.Op.Adaptive", "PathScripts.PathAdaptive"),
-    "face": ("Path.Op.MillFace", "Path.Op.Face", "Path.Op.MillFacing", "PathScripts.PathMillFace"),
-    "mill_face": ("Path.Op.MillFace", "Path.Op.Face", "Path.Op.MillFacing", "PathScripts.PathMillFace"),
+    "face": ("Path.Op.MillFacing", "Path.Op.MillFace", "Path.Op.Face", "PathScripts.PathMillFace"),
+    "facing": ("Path.Op.MillFacing", "Path.Op.MillFace", "Path.Op.Face", "PathScripts.PathMillFace"),
+    "mill_face": ("Path.Op.MillFacing", "Path.Op.MillFace", "Path.Op.Face", "PathScripts.PathMillFace"),
+    "millface": ("Path.Op.MillFacing", "Path.Op.MillFace", "Path.Op.Face", "PathScripts.PathMillFace"),
+    "mill_facing": ("Path.Op.MillFacing", "Path.Op.MillFace", "PathScripts.PathMillFacing"),
+    "millfacing": ("Path.Op.MillFacing", "Path.Op.MillFace", "PathScripts.PathMillFacing"),
     "surface": ("Path.Op.Surface", "PathScripts.PathSurface"),
     "surface_milling": ("Path.Op.Surface", "PathScripts.PathSurface"),
     "helix": ("Path.Op.Helix", "PathScripts.PathHelix"),
@@ -197,7 +204,16 @@ class _RedirectLoader:
         self.target_name = target_name
 
     def create_module(self, spec):
-        return sys.modules.get(self.target_name) or importlib.import_module(self.target_name)
+        targets = self.target_name if isinstance(self.target_name, (list, tuple)) else (self.target_name,)
+        for t in targets:
+            mod = sys.modules.get(t)
+            if mod is not None:
+                return mod
+            try:
+                return importlib.import_module(t)
+            except Exception:
+                continue
+        return None
 
     def exec_module(self, module):
         pass
@@ -209,18 +225,19 @@ class CAMModuleCompatFinder:
 
     @classmethod
     def find_spec(cls, fullname: str, path=None, target=None):
-        target_mod = _CAM_MODULE_REDIRECTS.get(fullname)
-        if target_mod:
-            # If target module is already loaded in sys.modules, return spec immediately
-            if target_mod in sys.modules:
-                from importlib.machinery import ModuleSpec
-                return ModuleSpec(fullname, _RedirectLoader(target_mod), origin=target_mod)
-            try:
-                spec = importlib.util.find_spec(target_mod)
-                if spec:
-                    return spec
-            except Exception as e:
-                logger.debug("Failed to find spec for redirect %s -> %s: %s", fullname, target_mod, e)
+        target_mods = _CAM_MODULE_REDIRECTS.get(fullname)
+        if target_mods:
+            targets = (target_mods,) if isinstance(target_mods, str) else target_mods
+            for target_mod in targets:
+                if target_mod in sys.modules:
+                    from importlib.machinery import ModuleSpec
+                    return ModuleSpec(fullname, _RedirectLoader(target_mod), origin=target_mod)
+                try:
+                    spec = importlib.util.find_spec(target_mod)
+                    if spec:
+                        return spec
+                except Exception:
+                    pass
         return None
 
 
@@ -233,17 +250,19 @@ class _VirtualPathScriptsPackage(types.ModuleType):
     `from PathScripts import PathJob` while permitting resolution of native files."""
 
     def __getattr__(self, name: str):
-        target = _CAM_MODULE_REDIRECTS.get(f"PathScripts.{name}")
-        if target:
-            try:
-                mod = sys.modules.get(target)
-                if mod is None:
-                    mod = importlib.import_module(target)
-                setattr(self, name, mod)
-                sys.modules[f"PathScripts.{name}"] = mod
-                return mod
-            except Exception as e:
-                logger.warning("Failed to import redirected module %s: %s", target, e)
+        target_mods = _CAM_MODULE_REDIRECTS.get(f"PathScripts.{name}")
+        if target_mods:
+            targets = (target_mods,) if isinstance(target_mods, str) else target_mods
+            for target in targets:
+                try:
+                    mod = sys.modules.get(target)
+                    if mod is None:
+                        mod = importlib.import_module(target)
+                    setattr(self, name, mod)
+                    sys.modules[f"PathScripts.{name}"] = mod
+                    return mod
+                except Exception as e:
+                    continue
 
         # Fall back to trying to load real submodules from disk (e.g. PathUtils, PathPropertyBag)
         try:
@@ -262,17 +281,19 @@ class _AliasedPackageModule(types.ModuleType):
 
     def __getattr__(self, name: str):
         fullname = f"{self.__name__}.{name}"
-        target = _CAM_MODULE_REDIRECTS.get(fullname)
-        if target:
-            try:
-                mod = sys.modules.get(target)
-                if mod is None:
-                    mod = importlib.import_module(target)
-                setattr(self, name, mod)
-                sys.modules[fullname] = mod
-                return mod
-            except Exception as e:
-                logger.warning("Failed to import redirected alias %s -> %s: %s", fullname, target, e)
+        target_mods = _CAM_MODULE_REDIRECTS.get(fullname)
+        if target_mods:
+            targets = (target_mods,) if isinstance(target_mods, str) else target_mods
+            for target in targets:
+                try:
+                    mod = sys.modules.get(target)
+                    if mod is None:
+                        mod = importlib.import_module(target)
+                    setattr(self, name, mod)
+                    sys.modules[fullname] = mod
+                    return mod
+                except Exception as e:
+                    continue
         raise AttributeError(f"module '{self.__name__}' has no attribute '{name}'")
 
 
@@ -335,21 +356,23 @@ def install_pathscripts_compat() -> str:
         _wrap_package_with_alias_support("Path")
         _wrap_package_with_alias_support("Path.Op")
 
-        for source_alias, modern_target in _CAM_MODULE_REDIRECTS.items():
+        for source_alias, target_mods in _CAM_MODULE_REDIRECTS.items():
             if source_alias not in sys.modules:
-                try:
-                    mod = sys.modules.get(modern_target)
-                    if mod is None:
-                        mod = importlib.import_module(modern_target)
-                    sys.modules[source_alias] = mod
-                    # Bind attribute to parent package if available
-                    if "." in source_alias:
-                        parent_name, attr_name = source_alias.rsplit(".", 1)
-                        parent_mod = sys.modules.get(parent_name)
-                        if parent_mod is not None:
-                            setattr(parent_mod, attr_name, mod)
-                except Exception:
-                    pass
+                targets = (target_mods,) if isinstance(target_mods, str) else target_mods
+                for modern_target in targets:
+                    try:
+                        mod = sys.modules.get(modern_target)
+                        if mod is None:
+                            mod = importlib.import_module(modern_target)
+                        sys.modules[source_alias] = mod
+                        if "." in source_alias:
+                            parent_name, attr_name = source_alias.rsplit(".", 1)
+                            parent_mod = sys.modules.get(parent_name)
+                            if parent_mod is not None:
+                                setattr(parent_mod, attr_name, mod)
+                        break
+                    except Exception:
+                        pass
 
     _installed = True
     logger.info("CAM module compatibility & alias bridge installed (mode=%s)", mode)
@@ -412,6 +435,48 @@ def get_job_create():
         except Exception:
             continue
     raise ImportError("Path (CAM) module not available. Please install FreeCAD with CAM workbench support.")
+
+
+def get_op_viewprovider_resources(op_name: str) -> Any:
+    """Return CommandResources (res) for a CAM operation to attach its ViewProvider in GUI mode."""
+    op_lower = str(op_name).lower().replace("-", "_").replace(" ", "_")
+    candidate_names = [op_name]
+    if op_lower in ("face", "facing", "millface", "millfacing", "mill_face", "mill_facing"):
+        candidate_names = ["MillFacing", "MillFace", "Face"]
+    elif op_lower in ("pocket", "pocket_shape", "pocketshape"):
+        candidate_names = ["PocketShape", "Pocket"]
+    elif op_lower in ("drill", "drilling"):
+        candidate_names = ["Drilling"]
+    elif op_lower in ("profile", "contour"):
+        candidate_names = ["Profile"]
+    elif op_lower in ("adaptive",):
+        candidate_names = ["Adaptive"]
+    elif op_lower in ("surface", "surfacing", "surface_milling"):
+        candidate_names = ["Surface"]
+    elif op_lower in ("helix", "helical"):
+        candidate_names = ["Helix"]
+    elif op_lower in ("slot", "slotting"):
+        candidate_names = ["Slot"]
+    elif op_lower in ("engrave", "engraving"):
+        candidate_names = ["Engrave"]
+    elif op_lower in ("deburr", "deburring"):
+        candidate_names = ["Deburr"]
+    elif op_lower in ("vcarve",):
+        candidate_names = ["Vcarve"]
+
+    for cand in candidate_names:
+        for mod_path in (f"Path.Op.Gui.{cand}", f"PathScripts.Path{cand}Gui"):
+            try:
+                mod = sys.modules.get(mod_path)
+                if mod is None:
+                    mod = importlib.import_module(mod_path)
+                cmd = getattr(mod, "Command", None)
+                res = getattr(cmd, "res", None) if cmd else None
+                if res is not None:
+                    return res
+            except Exception:
+                continue
+    return None
 
 
 def get_job_viewprovider():

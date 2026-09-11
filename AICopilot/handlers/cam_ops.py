@@ -11,29 +11,47 @@ try:
         get_job_create,
         get_stock_factories,
         get_job_viewprovider,
+        get_op_viewprovider_resources,
     )
 except Exception:
     try:
-        from compat_pathscripts import (
+        from AICopilot.compat_pathscripts import (
             get_op_create,
             get_job_create,
             get_stock_factories,
             get_job_viewprovider,
+            get_op_viewprovider_resources,
         )
     except Exception:
-        def get_op_create(name):
-            import importlib
-            return importlib.import_module(f"Path.Op.{name.capitalize()}").Create
-        def get_job_create():
-            import importlib
-            return importlib.import_module("Path.Main.Job").Create
-        def get_stock_factories():
-            import importlib
-            m = importlib.import_module("Path.Main.Stock")
-            return m.CreateBox, getattr(m, "CreateCylinder", None), getattr(m, "CreateFromBase", None)
-        def get_job_viewprovider():
-            import importlib
-            return getattr(importlib.import_module("Path.Main.Gui.Job"), "ViewProvider", None)
+        try:
+            from compat_pathscripts import (
+                get_op_create,
+                get_job_create,
+                get_stock_factories,
+                get_job_viewprovider,
+                get_op_viewprovider_resources,
+            )
+        except Exception:
+            def get_op_create(name):
+                import importlib
+                for mod in (f"Path.Op.MillFacing", f"Path.Op.{name.capitalize()}"):
+                    try:
+                        return importlib.import_module(mod).Create
+                    except Exception:
+                        pass
+                return importlib.import_module(f"Path.Op.{name.capitalize()}").Create
+            def get_job_create():
+                import importlib
+                return importlib.import_module("Path.Main.Job").Create
+            def get_stock_factories():
+                import importlib
+                m = importlib.import_module("Path.Main.Stock")
+                return m.CreateBox, getattr(m, "CreateCylinder", None), getattr(m, "CreateFromBase", None)
+            def get_job_viewprovider():
+                import importlib
+                return getattr(importlib.import_module("Path.Main.Gui.Job"), "ViewProvider", None)
+            def get_op_viewprovider_resources(op_name):
+                return None
 
 
 class CAMOpsHandler(BaseHandler):
@@ -377,19 +395,32 @@ class CAMOpsHandler(BaseHandler):
             return self.log_and_return("adaptive", args, error=e, duration=time.time() - start_time)
 
     def face(self, args: Dict[str, Any]) -> str:
-        """Create a face milling operation (facing/surfacing top surfaces)."""
+        """Create a face milling operation (facing/surfacing top surfaces).
+
+        Supports modern FreeCAD dev build MillFacing (CAM_MillFacing) and release MillFace.
+        """
         start_time = time.time()
         try:
             try:
-                CreateMillFace = get_op_create('face')
+                CreateFacing = get_op_create('facing')
             except ImportError:
-                return self._placeholder_operation("Face Milling", args)
+                try:
+                    CreateFacing = get_op_create('face')
+                except ImportError:
+                    return self._placeholder_operation("Face Milling", args)
 
-            doc, op = self._create_path_op(CreateMillFace, args, 'MillFace')
+            op_label = "MillFacing" if "MillFacing" in getattr(CreateFacing, "__module__", "") else "MillFace"
+            doc, op = self._create_path_op(CreateFacing, args, op_label)
 
-            stepover = args.get('stepover') if 'stepover' in args else args.get('step_over')
+            # StepOver / Overlap percentage
+            stepover = args.get('stepover') if 'stepover' in args else (args.get('step_over') if 'step_over' in args else args.get('overlap'))
             if stepover is not None and hasattr(op, 'StepOver'):
-                op.StepOver = stepover
+                try:
+                    op.StepOver = int(stepover) if hasattr(op.StepOver, 'real') or isinstance(op.StepOver, int) else stepover
+                except Exception:
+                    op.StepOver = stepover
+
+            # StepDown
             stepdown = args.get('stepdown') if 'stepdown' in args else args.get('step_down')
             if stepdown is not None and hasattr(op, 'StepDown'):
                 try:
@@ -398,7 +429,37 @@ class CAMOpsHandler(BaseHandler):
                     pass
                 op.StepDown = stepdown
 
-            # Default ClearEdges to True for facing/jointing so the cutter clears workpiece edges
+            # CutMode (Climb / Conventional)
+            cut_mode = args.get('cut_mode') or args.get('cutmode') or 'Climb'
+            if hasattr(op, 'CutMode'):
+                cm = str(cut_mode).capitalize()
+                if cm in ('Climb', 'Conventional'):
+                    op.CutMode = cm
+
+            # ClearingPattern for modern MillFacing (ZigZag, Directional, Spiral, Bidirectional)
+            clearing_pattern = args.get('clearing_pattern') or args.get('clearingpattern') or args.get('strategy')
+            if clearing_pattern and hasattr(op, 'ClearingPattern'):
+                cp_lower = str(clearing_pattern).lower()
+                if 'direct' in cp_lower:
+                    op.ClearingPattern = 'Directional'
+                elif 'spiral' in cp_lower:
+                    op.ClearingPattern = 'Spiral'
+                elif 'bi' in cp_lower:
+                    op.ClearingPattern = 'Bidirectional'
+                elif 'zig' in cp_lower:
+                    op.ClearingPattern = 'ZigZag'
+
+            # Extensions (PassExtension, StockExtension, AxialStockToLeave)
+            if 'pass_extension' in args and hasattr(op, 'PassExtension'):
+                op.PassExtension = args['pass_extension']
+            if 'stock_extension' in args and hasattr(op, 'StockExtension'):
+                op.StockExtension = args['stock_extension']
+            if 'axial_stock_to_leave' in args and hasattr(op, 'AxialStockToLeave'):
+                op.AxialStockToLeave = args['axial_stock_to_leave']
+            if 'angle' in args and hasattr(op, 'Angle'):
+                op.Angle = args['angle']
+
+            # Legacy MillFace ClearEdges compatibility
             clear_edges = args.get('clear_edges', True)
             if hasattr(op, 'ClearEdges'):
                 op.ClearEdges = clear_edges
@@ -406,7 +467,7 @@ class CAMOpsHandler(BaseHandler):
             self.recompute(doc)
             faces = args.get('faces', [])
             face_info = f"faces={faces}" if faces else "whole model / stock top"
-            result = f"Created MillFace operation '{op.Name}' in job '{args.get('job_name', 'Job')}' ({face_info})"
+            result = f"Created {op.Label} operation '{op.Name}' in job '{args.get('job_name', 'Job')}' ({face_info})"
             return self.log_and_return("face", args, result=result, duration=time.time() - start_time)
         except Exception as e:
             return self.log_and_return("face", args, error=e, duration=time.time() - start_time)
@@ -1344,9 +1405,36 @@ class CAMOpsHandler(BaseHandler):
             if not job:
                 raise RuntimeError(f"Job '{job_name}' not found. Create a CAM job first.")
 
+        # Ensure parent Job has ViewProvider in GUI mode to support setupEditVisibility
+        if FreeCAD.GuiUp and hasattr(job, 'ViewObject') and job.ViewObject:
+            if getattr(job.ViewObject, 'Proxy', None) is None:
+                try:
+                    JobVP = get_job_viewprovider()
+                    if JobVP:
+                        job.ViewObject.Proxy = JobVP(job.ViewObject)
+                        try:
+                            job.ViewObject.addExtension("Gui::ViewProviderGroupExtensionPython")
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+
         # FC 1.2: parentJob= only; passing obj= causes "Object can only be in a
         # single Group" if the object is already in job.Model.Group
         op = create_fn(args.get('name', default_name), parentJob=job)
+
+        # Attach operation ViewProvider in GUI mode so it can be edited via UI and visualized in 3D
+        if FreeCAD.GuiUp and hasattr(op, 'ViewObject') and op.ViewObject:
+            try:
+                res = get_op_viewprovider_resources(default_name)
+                if res:
+                    import Path.Op.Gui.Base as PathOpGui
+                    vp = PathOpGui.ViewProvider(op.ViewObject, res)
+                    vp.deleteOnReject = False
+                    op.ViewObject.Proxy = vp
+                    op.ViewObject.Visibility = True
+            except Exception:
+                pass
 
         subs = list(args.get('faces', [])) + list(args.get('edges', []))
         if subs:
@@ -1367,7 +1455,8 @@ class CAMOpsHandler(BaseHandler):
                     f"faces/edges {subs} onto it. Pass an existing object name "
                     f"via base_object=, or create '{base_obj_name}' first."
                 )
-            op.Base = [(base, subs)]
+            if hasattr(op, 'Base'):
+                op.Base = [(base, subs)]
 
         # Common parameters shared by most ops; hasattr guard makes them safe on
         # ops that don't support them
@@ -1415,5 +1504,7 @@ class CAMOpsHandler(BaseHandler):
     # Method aliases for compatibility with diverse LLM tool call conventions
     pocket_shape = pocket
     mill_face = face
+    mill_facing = face
+    facing = face
     drill = drilling
     surface_milling = surface
