@@ -1132,3 +1132,99 @@ def test_dock_widget_settings_menu_and_history_buttons(mock_freecad, qapp, tmp_p
         assert s.get_setting("selected_model") == "gemini-3.7-flash"
     finally:
         widget.close()
+
+
+def test_default_feeds_and_speeds_heuristic():
+    from AICopilot.handlers.base import get_default_feeds_and_speeds
+
+    # Wood with 12.7mm (1/2 in) endmill
+    wood = get_default_feeds_and_speeds(tool_type="endmill", diameter=12.7, material="Wood", flutes=2)
+    assert 4000.0 <= wood["spindle_speed"] <= 18000.0
+    assert wood["horiz_feed_min"] > 0.0
+    assert wood["vert_feed_min"] > 0.0
+    # In mm/s for PropertySpeed
+    assert abs(wood["horiz_feed"] - round(wood["horiz_feed_min"] / 60.0, 3)) < 1e-4
+    assert abs(wood["vert_feed"] - round(wood["vert_feed_min"] / 60.0, 3)) < 0.005
+
+    # Aluminum with 6mm endmill (slower Vc than wood)
+    alu = get_default_feeds_and_speeds(tool_type="endmill", diameter=6.0, material="Aluminum", flutes=2)
+    assert alu["spindle_speed"] <= 10000.0
+    assert alu["horiz_feed_min"] < wood["horiz_feed_min"]
+
+    # Steel with 6mm endmill (slower than aluminum)
+    steel = get_default_feeds_and_speeds(tool_type="endmill", diameter=6.0, material="Steel", flutes=4)
+    assert steel["spindle_speed"] <= alu["spindle_speed"]
+
+    # Fallback with invalid / 0 diameter
+    fallback = get_default_feeds_and_speeds(diameter=0, material="")
+    assert fallback["spindle_speed"] > 0
+    assert fallback["horiz_feed"] > 0
+
+
+def test_settings_max_turns_persistence(tmp_path, monkeypatch):
+    import AICopilot.settings as s
+    monkeypatch.setenv("AICOPILOT_SETTINGS_PATH", str(tmp_path / "settings.json"))
+
+    # Default max_turns should be 30
+    assert s.get_setting("max_turns") == 30
+
+    # Custom value persisted
+    s.set_setting("max_turns", 45)
+    assert s.get_setting("max_turns") == 45
+
+
+def test_spreadsheet_inspect_sheet_and_safe_get(mock_freecad):
+    from AICopilot.handlers.spreadsheet_ops import SpreadsheetOpsHandler
+    from unittest.mock import MagicMock
+
+    sheet = MagicMock()
+    sheet.Name = "Spreadsheet"
+    sheet.Label = "Spreadsheet"
+    sheet.TypeId = "Spreadsheet::Sheet"
+
+    # Mock non-empty cells
+    def mock_get_contents(cell):
+        if cell == "A1":
+            return "=12.7 mm"
+        elif cell == "A2":
+            return "50"
+        return ""
+
+    def mock_get(cell):
+        if cell == "A1":
+            val = MagicMock()
+            val.Value = 12.7
+            val.Unit = "mm"
+            val.__str__ = lambda self: "12.7 mm"
+            return val
+        elif cell == "A2":
+            return 50
+        raise ValueError(f"Invalid cell address or property: {cell}")
+
+    sheet.getContents = MagicMock(side_effect=mock_get_contents)
+    sheet.get = MagicMock(side_effect=mock_get)
+    sheet.getAlias = MagicMock(side_effect=lambda cell: "ToolDia" if cell == "A1" else None)
+    sheet.getNonEmptyCells = MagicMock(return_value=["A1", "A2"])
+
+    doc = MagicMock()
+    doc.getObject.return_value = sheet
+    mock_freecad.ActiveDocument = doc
+    import AICopilot.handlers.base as b
+    b.FreeCAD = mock_freecad
+
+    handler = SpreadsheetOpsHandler()
+
+    # inspect_sheet
+    res = handler.inspect_sheet({"sheet_name": "Spreadsheet", "max_rows": 5, "max_cols": 5})
+    import json
+    data = json.loads(res)
+    assert data["spreadsheet_name"] == "Spreadsheet"
+    assert "A1" in data["cells"]
+    assert data["cells"]["A1"]["alias"] == "ToolDia"
+    assert data["cells"]["A1"]["formula"] == "=12.7 mm"
+    assert "12.7" in str(data["cells"]["A1"]["value"])
+
+    # Safe get_cell on empty cell returns None, no exception
+    res_empty = handler.get_cell({"sheet_name": "Spreadsheet", "cell": "C1"})
+    data_empty = json.loads(res_empty)
+    assert data_empty["value"] is None

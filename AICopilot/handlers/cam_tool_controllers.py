@@ -3,7 +3,7 @@
 import FreeCAD
 import time
 from typing import Dict, Any
-from .base import BaseHandler, mm_min_to_mm_s
+from .base import BaseHandler, mm_min_to_mm_s, get_default_feeds_and_speeds
 
 
 class CAMToolControllersHandler(BaseHandler):
@@ -82,10 +82,27 @@ class CAMToolControllersHandler(BaseHandler):
             # Link to tool bit
             controller.Tool = tool
 
-            # Set parameters
-            spindle_speed = args.get('spindle_speed', 10000)
-            feed_rate = args.get('feed_rate', 1000)           # mm/min from user
-            vertical_feed_rate = args.get('vertical_feed_rate', feed_rate / 3)
+            # Set parameters with intelligent material and diameter-aware defaults
+            spindle_speed = args.get('spindle_speed')
+            feed_rate = args.get('feed_rate')
+            vertical_feed_rate = args.get('vertical_feed_rate')
+
+            if spindle_speed is None or feed_rate is None or vertical_feed_rate is None:
+                tool_d = getattr(tool, 'Diameter', 6.0)
+                if hasattr(tool_d, 'Value'):
+                    tool_d = tool_d.Value
+                tool_mat = getattr(tool, 'Material', 'Wood')
+                tool_flutes = getattr(tool, 'Flutes', 2)
+                defaults = get_default_feeds_and_speeds(diameter=tool_d, material=tool_mat, flutes=tool_flutes)
+                if spindle_speed is None:
+                    spindle_speed = defaults["spindle_speed"]
+                if feed_rate is None:
+                    feed_rate = defaults["horiz_feed_min"]
+                if vertical_feed_rate is None:
+                    if 'feed_rate' in args:
+                        vertical_feed_rate = feed_rate / 3
+                    else:
+                        vertical_feed_rate = defaults["vert_feed_min"]
 
             # Existing tool_number values already in use in THIS job — a
             # duplicate T-code in exported G-code loads the wrong tool

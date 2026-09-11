@@ -273,7 +273,13 @@ class DirectToolBridge:
                 res = fn(args)
 
             elif tool_name == "spreadsheet_operations":
-                fn = getattr(server.spreadsheet_ops, op, None)
+                sheet_op_map = {
+                    "create_sheet": "create_spreadsheet",
+                    "inspect_sheet": "inspect_sheet",
+                    "list_cells": "inspect_sheet",
+                }
+                mapped_op = sheet_op_map.get(op, op)
+                fn = getattr(server.spreadsheet_ops, mapped_op, None)
                 if not fn:
                     raise ValueError(f"Unknown Spreadsheet operation: {op}")
                 res = fn(args)
@@ -448,13 +454,13 @@ class DirectToolBridge:
             },
             {
                 "name": "spreadsheet_operations",
-                "description": "Create and edit parametric Spreadsheets: create_sheet, set_cell, get_cell, set_alias, bind_property.",
+                "description": "Create and edit parametric Spreadsheets: inspect_sheet, create_sheet, set_cell, get_cell, set_alias, bind_property.",
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "operation": {
                             "type": "string",
-                            "enum": ["create_sheet", "set_cell", "get_cell", "set_alias", "bind_property"],
+                            "enum": ["inspect_sheet", "create_sheet", "create_spreadsheet", "set_cell", "get_cell", "set_alias", "bind_property"],
                             "description": "Spreadsheet operation to perform"
                         },
                         "sheet_name": {"type": "string", "description": "Spreadsheet object name"},

@@ -55,9 +55,9 @@ class SpreadsheetOpsHandler(BaseHandler):
     """Handler for Spreadsheet workbench operations."""
 
     _ALLOWED_OPERATIONS = frozenset({
-        "create_spreadsheet", "set_cell", "get_cell", "set_alias", "get_alias",
+        "create_spreadsheet", "create_sheet", "set_cell", "get_cell", "set_alias", "get_alias",
         "clear_cell", "set_cell_range", "get_cell_range", "bind_property",
-        "list_aliases", "import_csv", "export_csv",
+        "list_aliases", "inspect_sheet", "list_cells", "import_csv", "export_csv",
     })
 
     def create_spreadsheet(self, args: Dict[str, Any]) -> str:
@@ -79,10 +79,93 @@ class SpreadsheetOpsHandler(BaseHandler):
         except Exception as e:
             return f"Error creating spreadsheet: {e}"
 
+    create_sheet = create_spreadsheet
+
+    def inspect_sheet(self, args: Dict[str, Any]) -> str:
+        """Inspect all used cells, formulas, aliases, and evaluated values in a spreadsheet."""
+        try:
+            sheet_name = args.get('spreadsheet_name') or args.get('sheet_name') or args.get('name', '')
+            spreadsheet = None
+            doc = self.get_document()
+            if not doc:
+                return "Error: No active document"
+
+            if sheet_name:
+                doc, spreadsheet, err = self.resolve_object(sheet_name, noun='Spreadsheet')
+                if err:
+                    # Fallback search by Label or first sheet
+                    for o in getattr(doc, 'Objects', []):
+                        if getattr(o, 'TypeId', '') == 'Spreadsheet::Sheet' and (o.Name == sheet_name or o.Label == sheet_name):
+                            spreadsheet = o
+                            break
+
+            if not spreadsheet:
+                for o in getattr(doc, 'Objects', []):
+                    if getattr(o, 'TypeId', '') == 'Spreadsheet::Sheet':
+                        spreadsheet = o
+                        break
+
+            if not spreadsheet:
+                return "Error: No spreadsheet found in document"
+
+            cells_data = {}
+            addrs = []
+            if hasattr(spreadsheet, 'getNonEmptyCells') and callable(spreadsheet.getNonEmptyCells):
+                raw = spreadsheet.getNonEmptyCells()
+                if isinstance(raw, (list, tuple, set)):
+                    addrs = [str(a) for a in raw]
+            if not addrs and hasattr(spreadsheet, 'getUsedCells') and callable(spreadsheet.getUsedCells):
+                raw = spreadsheet.getUsedCells()
+                if isinstance(raw, (list, tuple, set)):
+                    addrs = [str(a) for a in raw]
+            if not addrs and hasattr(spreadsheet, 'getUsedRange') and callable(spreadsheet.getUsedRange):
+                try:
+                    ur = spreadsheet.getUsedRange()
+                    if ur and len(ur) == 2 and ur[0] and ur[1]:
+                        p_start = _parse_cell_ref(ur[0])
+                        p_end = _parse_cell_ref(ur[1])
+                        if p_start and p_end:
+                            for r in range(p_start[1], min(p_end[1] + 1, 100)):
+                                for c in range(_col_to_num(p_start[0]), min(_col_to_num(p_end[0]) + 1, 26)):
+                                    cell_ref = f"{_num_to_col(c)}{r}"
+                                    cnt = spreadsheet.getContents(cell_ref)
+                                    if cnt:
+                                        addrs.append(cell_ref)
+                except Exception:
+                    pass
+
+            for addr in addrs:
+                alias = str(spreadsheet.getAlias(addr)) if spreadsheet.getAlias(addr) else None
+                try:
+                    formula = spreadsheet.getContents(addr)
+                    formula = str(formula) if formula else None
+                except Exception:
+                    formula = None
+                try:
+                    val = spreadsheet.get(addr)
+                except (ValueError, AttributeError):
+                    val = None
+                cells_data[str(addr)] = {
+                    "alias": alias,
+                    "formula": formula,
+                    "value": str(val) if val is not None else None,
+                }
+
+            return json.dumps({
+                "spreadsheet_name": str(getattr(spreadsheet, 'Name', sheet_name)),
+                "label": str(getattr(spreadsheet, 'Label', sheet_name)),
+                "total_cells": len(cells_data),
+                "cells": cells_data,
+            }, indent=2)
+        except Exception as e:
+            return f"Error inspecting spreadsheet: {e}"
+
+    list_cells = inspect_sheet
+
     def set_cell(self, args: Dict[str, Any]) -> str:
         """Set a cell value in a spreadsheet."""
         try:
-            spreadsheet_name = args.get('spreadsheet_name', '')
+            spreadsheet_name = args.get('spreadsheet_name') or args.get('sheet_name', '')
             cell = args.get('cell', 'A1')
             value = args.get('value', '')
 
@@ -104,7 +187,7 @@ class SpreadsheetOpsHandler(BaseHandler):
     def get_cell(self, args: Dict[str, Any]) -> str:
         """Get a cell value from a spreadsheet."""
         try:
-            spreadsheet_name = args.get('spreadsheet_name', '')
+            spreadsheet_name = args.get('spreadsheet_name') or args.get('sheet_name', '')
             cell = args.get('cell', 'A1')
 
             doc, spreadsheet, err = self.resolve_object(spreadsheet_name, noun='Spreadsheet')
@@ -113,7 +196,10 @@ class SpreadsheetOpsHandler(BaseHandler):
             if spreadsheet.TypeId != 'Spreadsheet::Sheet':
                 return f"Object {spreadsheet_name} is not a spreadsheet"
 
-            value = spreadsheet.get(cell)
+            try:
+                value = spreadsheet.get(cell)
+            except (ValueError, AttributeError):
+                value = None
             # getContents returns the stored expression/formula (e.g. "=A1+B1");
             # spreadsheet.get() evaluates it away. Surface both so a read→write
             # round-trip doesn't silently replace a live formula with a literal,
@@ -136,7 +222,7 @@ class SpreadsheetOpsHandler(BaseHandler):
     def set_alias(self, args: Dict[str, Any]) -> str:
         """Set an alias for a cell (allows referencing cell by name in expressions)."""
         try:
-            spreadsheet_name = args.get('spreadsheet_name', '')
+            spreadsheet_name = args.get('spreadsheet_name') or args.get('sheet_name', '')
             cell = args.get('cell', 'A1')
             alias = args.get('alias', '')
 
@@ -160,7 +246,7 @@ class SpreadsheetOpsHandler(BaseHandler):
     def get_alias(self, args: Dict[str, Any]) -> str:
         """Get the alias for a cell."""
         try:
-            spreadsheet_name = args.get('spreadsheet_name', '')
+            spreadsheet_name = args.get('spreadsheet_name') or args.get('sheet_name', '')
             cell = args.get('cell', 'A1')
 
             doc, spreadsheet, err = self.resolve_object(spreadsheet_name, noun='Spreadsheet')
@@ -182,7 +268,7 @@ class SpreadsheetOpsHandler(BaseHandler):
     def clear_cell(self, args: Dict[str, Any]) -> str:
         """Clear a cell in a spreadsheet."""
         try:
-            spreadsheet_name = args.get('spreadsheet_name', '')
+            spreadsheet_name = args.get('spreadsheet_name') or args.get('sheet_name', '')
             cell = args.get('cell', 'A1')
 
             doc, spreadsheet, err = self.resolve_object(spreadsheet_name, noun='Spreadsheet')
@@ -202,7 +288,7 @@ class SpreadsheetOpsHandler(BaseHandler):
     def set_cell_range(self, args: Dict[str, Any]) -> str:
         """Set values for a range of cells."""
         try:
-            spreadsheet_name = args.get('spreadsheet_name', '')
+            spreadsheet_name = args.get('spreadsheet_name') or args.get('sheet_name', '')
             start_cell = args.get('start_cell', 'A1')
             values = args.get('values', [])  # 2D array of values
 
@@ -242,7 +328,7 @@ class SpreadsheetOpsHandler(BaseHandler):
     def get_cell_range(self, args: Dict[str, Any]) -> str:
         """Get values from a range of cells."""
         try:
-            spreadsheet_name = args.get('spreadsheet_name', '')
+            spreadsheet_name = args.get('spreadsheet_name') or args.get('sheet_name', '')
             start_cell = args.get('start_cell', 'A1')
             end_cell = args.get('end_cell', 'A1')
 
@@ -269,7 +355,10 @@ class SpreadsheetOpsHandler(BaseHandler):
                 for col_num in range(start_col_num, end_col_num + 1):
                     cell = f"{_num_to_col(col_num)}{row}"
                     try:
-                        value = spreadsheet.get(cell)
+                        try:
+                            value = spreadsheet.get(cell)
+                        except (ValueError, AttributeError):
+                            value = None
                         row_values.append(str(value) if value is not None else "")
                     except Exception:
                         row_values.append("")
@@ -288,7 +377,7 @@ class SpreadsheetOpsHandler(BaseHandler):
         try:
             object_name = args.get('object_name', '')
             property_name = args.get('property_name', '')
-            spreadsheet_name = args.get('spreadsheet_name', '')
+            spreadsheet_name = args.get('spreadsheet_name') or args.get('sheet_name', '')
             cell_or_alias = args.get('cell', '')
 
             return self.bind_expression(
@@ -302,7 +391,7 @@ class SpreadsheetOpsHandler(BaseHandler):
     def list_aliases(self, args: Dict[str, Any]) -> str:
         """List all aliases in a spreadsheet."""
         try:
-            spreadsheet_name = args.get('spreadsheet_name', '')
+            spreadsheet_name = args.get('spreadsheet_name') or args.get('sheet_name', '')
 
             doc, spreadsheet, err = self.resolve_object(spreadsheet_name, noun='Spreadsheet')
             if err:
@@ -355,7 +444,7 @@ class SpreadsheetOpsHandler(BaseHandler):
     def import_csv(self, args: Dict[str, Any]) -> str:
         """Import CSV data into a spreadsheet."""
         try:
-            spreadsheet_name = args.get('spreadsheet_name', '')
+            spreadsheet_name = args.get('spreadsheet_name') or args.get('sheet_name', '')
             csv_data = args.get('csv_data', '')
             start_cell = args.get('start_cell', 'A1')
             delimiter = args.get('delimiter', ',')
@@ -409,7 +498,7 @@ class SpreadsheetOpsHandler(BaseHandler):
     def export_csv(self, args: Dict[str, Any]) -> str:
         """Export spreadsheet data as CSV."""
         try:
-            spreadsheet_name = args.get('spreadsheet_name', '')
+            spreadsheet_name = args.get('spreadsheet_name') or args.get('sheet_name', '')
             start_cell = args.get('start_cell', 'A1')
             end_cell = args.get('end_cell')   # None => auto-detect the used range
             delimiter = args.get('delimiter', ',')
@@ -459,7 +548,10 @@ class SpreadsheetOpsHandler(BaseHandler):
                 for col_num in range(start_col_num, end_col_num + 1):
                     cell = f"{_num_to_col(col_num)}{row}"
                     try:
-                        value = spreadsheet.get(cell)
+                        try:
+                            value = spreadsheet.get(cell)
+                        except (ValueError, AttributeError):
+                            value = None
                         row_values.append("" if value is None else str(value))
                     except Exception as e:
                         row_values.append("")

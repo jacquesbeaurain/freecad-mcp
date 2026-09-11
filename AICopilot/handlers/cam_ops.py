@@ -3,7 +3,7 @@
 import FreeCAD
 import time
 from typing import Dict, Any
-from .base import BaseHandler
+from .base import BaseHandler, get_default_feeds_and_speeds
 
 try:
     from ..compat_pathscripts import (
@@ -140,6 +140,21 @@ class CAMOpsHandler(BaseHandler):
                 except Exception:
                     # ViewProvider setup is optional, just log if it fails
                     pass
+
+            # Ensure default tool controllers have non-zero feeds/speeds to prevent Tool Feedrate Error
+            if hasattr(job, 'Tools') and hasattr(job.Tools, 'Group'):
+                for tc in job.Tools.Group:
+                    if hasattr(tc, 'HorizFeed') and getattr(getattr(tc, 'HorizFeed', None), 'Value', 0.0) == 0.0:
+                        t_bit = getattr(tc, 'Tool', None)
+                        d = getattr(t_bit, 'Diameter', 6.0)
+                        if hasattr(d, 'Value'):
+                            d = d.Value
+                        mat = getattr(t_bit, 'Material', 'Wood')
+                        fl = getattr(t_bit, 'Flutes', 2)
+                        dfs = get_default_feeds_and_speeds(diameter=d, material=mat, flutes=fl)
+                        tc.SpindleSpeed = dfs["spindle_speed"]
+                        tc.HorizFeed = dfs["horiz_feed"]
+                        tc.VertFeed = dfs["vert_feed"]
 
             self.recompute(doc)
 
@@ -372,14 +387,21 @@ class CAMOpsHandler(BaseHandler):
 
             doc, op = self._create_path_op(CreateMillFace, args, 'MillFace')
 
-            if 'stepover' in args and hasattr(op, 'StepOver'):
-                op.StepOver = args['stepover']
-            if 'stepdown' in args and hasattr(op, 'StepDown'):
+            stepover = args.get('stepover') if 'stepover' in args else args.get('step_over')
+            if stepover is not None and hasattr(op, 'StepOver'):
+                op.StepOver = stepover
+            stepdown = args.get('stepdown') if 'stepdown' in args else args.get('step_down')
+            if stepdown is not None and hasattr(op, 'StepDown'):
                 try:
                     op.setExpression('StepDown', None)
                 except Exception:
                     pass
-                op.StepDown = args['stepdown']
+                op.StepDown = stepdown
+
+            # Default ClearEdges to True for facing/jointing so the cutter clears workpiece edges
+            clear_edges = args.get('clear_edges', True)
+            if hasattr(op, 'ClearEdges'):
+                op.ClearEdges = clear_edges
 
             self.recompute(doc)
             faces = args.get('faces', [])
@@ -420,14 +442,21 @@ class CAMOpsHandler(BaseHandler):
 
             doc, op = self._create_path_op(CreateSurface, args, 'Surface')
 
-            if 'stepover' in args and hasattr(op, 'StepOver'):
-                op.StepOver = args['stepover']
-            if 'stepdown' in args and hasattr(op, 'StepDown'):
+            stepover = args.get('stepover') if 'stepover' in args else args.get('step_over')
+            if stepover is not None and hasattr(op, 'StepOver'):
+                op.StepOver = stepover
+            stepdown = args.get('stepdown') if 'stepdown' in args else args.get('step_down')
+            if stepdown is not None and hasattr(op, 'StepDown'):
                 try:
                     op.setExpression('StepDown', None)
                 except Exception:
                     pass
-                op.StepDown = args['stepdown']
+                op.StepDown = stepdown
+
+            # Default ClearEdges to True for facing/jointing so the cutter clears workpiece edges
+            clear_edges = args.get('clear_edges', True)
+            if hasattr(op, 'ClearEdges'):
+                op.ClearEdges = clear_edges
 
             self.recompute(doc)
             faces = args.get('faces', [])
@@ -1323,16 +1352,16 @@ class CAMOpsHandler(BaseHandler):
         if subs:
             base_obj_name = args.get('base_object') or args.get('model_name') or args.get('model') or args.get('base') or 'Clone'
             base = self.get_object(base_obj_name, doc)
-            if not base and hasattr(job, 'Model') and job.Model:
-                # FreeCAD CAM Job clones the base model into job.Model.Group
-                for m in getattr(job.Model, 'Group', []):
-                    base = m
-                    break
+            # In FreeCAD CAM, operations inside a Job must reference the internal cloned model in job.Model.Group
+            if hasattr(job, 'Model') and getattr(job.Model, 'Group', None):
+                for m in job.Model.Group:
+                    if getattr(m, 'BaseFeature', None) == base or getattr(m, 'Label', '') == getattr(base, 'Label', ''):
+                        base = m
+                        break
+                else:
+                    if len(job.Model.Group) > 0 and (not base or base not in job.Model.Group):
+                        base = job.Model.Group[0]
             if not base:
-                # Do NOT silently proceed with op.Base unset — that produces
-                # either a whole-model-exterior toolpath (Profile) or a
-                # near-empty 2-3-command one (Pocket/Drilling/Adaptive) while
-                # the caller believes their faces/edges were applied.
                 raise RuntimeError(
                     f"base_object '{base_obj_name}' not found — cannot wire "
                     f"faces/edges {subs} onto it. Pass an existing object name "
@@ -1342,20 +1371,27 @@ class CAMOpsHandler(BaseHandler):
 
         # Common parameters shared by most ops; hasattr guard makes them safe on
         # ops that don't support them
-        if 'stepdown' in args and hasattr(op, 'StepDown'):
-            # Clear any expression binding before setting — FreeCAD binds
-            # StepDown to expression "OpToolDiameter" by default at op
-            # creation (Path/Base/SetupSheet.py DefaultStepDownExpression).
-            # Setting only the value while that binding is live means the
-            # caller's own recompute() (in the operation-specific method
-            # right after this returns) silently reverts it back to the
-            # SetupSheet-computed default. See configure_operation() above,
-            # which already does this correctly.
+        stepdown_val = args.get('stepdown') if 'stepdown' in args else args.get('step_down')
+        if stepdown_val is not None and hasattr(op, 'StepDown'):
             try:
                 op.setExpression('StepDown', None)
             except Exception:
                 pass
-            op.StepDown = args['stepdown']
+            op.StepDown = stepdown_val
+
+        # Guard against zero-feedrate on operation tool controller
+        tc = getattr(op, 'ToolController', None)
+        if tc and hasattr(tc, 'HorizFeed') and getattr(getattr(tc, 'HorizFeed', None), 'Value', 0.0) == 0.0:
+            t_bit = getattr(tc, 'Tool', None)
+            d = getattr(t_bit, 'Diameter', 6.0)
+            if hasattr(d, 'Value'):
+                d = d.Value
+            mat = getattr(t_bit, 'Material', 'Wood')
+            fl = getattr(t_bit, 'Flutes', 2)
+            dfs = get_default_feeds_and_speeds(diameter=d, material=mat, flutes=fl)
+            tc.SpindleSpeed = dfs["spindle_speed"]
+            tc.HorizFeed = dfs["horiz_feed"]
+            tc.VertFeed = dfs["vert_feed"]
         if 'direction' in args and hasattr(op, 'Direction'):
             op.Direction = args['direction']
         if 'cut_mode' in args and hasattr(op, 'CutMode'):

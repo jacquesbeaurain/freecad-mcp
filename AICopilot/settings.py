@@ -13,6 +13,7 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     "auto_save_on_execute": False,
     "selected_model": "gemini-3.6-flash",
     "command_history": [],
+    "max_turns": 30,
 }
 
 

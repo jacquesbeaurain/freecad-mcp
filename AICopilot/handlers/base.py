@@ -26,6 +26,68 @@ def mm_min_to_mm_s(value):
     return float(value) / 60.0
 
 
+def get_default_feeds_and_speeds(
+    tool_type: str = "endmill",
+    diameter: float = 6.0,
+    material: str = "Wood",
+    flutes: int = 2
+) -> Dict[str, float]:
+    """Calculate safe, intelligent default feeds and speeds based on tool shape, diameter, and material.
+
+    Returns dict with:
+      - spindle_speed (RPM)
+      - horiz_feed (mm/s, for FreeCAD PropertySpeed assignment)
+      - vert_feed (mm/s, for FreeCAD PropertySpeed assignment)
+      - horiz_feed_min (mm/min, for user display)
+      - vert_feed_min (mm/min, for user display)
+    """
+    try:
+        d = float(diameter) if diameter and float(diameter) > 0 else 6.0
+    except (ValueError, TypeError):
+        d = 6.0
+    try:
+        flutes = int(flutes) if flutes and int(flutes) > 0 else 2
+    except (ValueError, TypeError):
+        flutes = 2
+
+    mat = str(material).lower() if material else "wood"
+
+    # Surface speed (Vc in m/min) and base chip load factor (fz in mm/tooth)
+    if any(m in mat for m in ["alu", "brass", "copper", "metal"]):
+        vc = 150.0  # m/min
+        fz_base = 0.04 * (d / 6.0) ** 0.5
+        vert_ratio = 0.25
+    elif any(m in mat for m in ["steel", "iron"]):
+        vc = 60.0
+        fz_base = 0.025 * (d / 6.0) ** 0.5
+        vert_ratio = 0.20
+    elif any(m in mat for m in ["foam"]):
+        vc = 400.0
+        fz_base = 0.15 * (d / 6.0) ** 0.5
+        vert_ratio = 0.40
+    else:  # Wood / Hardwood / Softwood / MDF / Plywood / Plastics (default)
+        vc = 300.0  # m/min
+        fz_base = 0.08 * (d / 6.0) ** 0.5
+        vert_ratio = 0.35
+
+    import math
+    raw_rpm = (vc * 1000.0) / (math.pi * d)
+    rpm = max(4000.0, min(raw_rpm, 18000.0))
+    rpm = round(rpm / 500.0) * 500.0
+
+    feed_horiz_min = rpm * flutes * fz_base
+    feed_horiz_min = max(300.0, min(feed_horiz_min, 3600.0))
+    feed_vert_min = feed_horiz_min * vert_ratio
+
+    return {
+        "spindle_speed": float(rpm),
+        "horiz_feed": round(feed_horiz_min / 60.0, 3),   # mm/s
+        "vert_feed": round(feed_vert_min / 60.0, 3),     # mm/s
+        "horiz_feed_min": round(feed_horiz_min, 1),       # mm/min
+        "vert_feed_min": round(feed_vert_min, 1),         # mm/min
+    }
+
+
 class BaseHandler:
     """Base class for all FreeCAD operation handlers.
 

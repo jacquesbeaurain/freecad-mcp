@@ -180,6 +180,47 @@ def _cad_add_rectangle(sketch, width=100.0, height=None, center=True, x=0.0, y=0
     return (g0, g1, g2, g3)
 
 
+def _cad_get_spreadsheet_cells(sheet=None):
+    """Safely return a dictionary of all used cells, formulas, aliases, and values without throwing on empty cells."""
+    doc = FreeCAD.ActiveDocument
+    if not sheet and doc:
+        sheet = getattr(doc, "Spreadsheet", None)
+        if not sheet:
+            for o in getattr(doc, "Objects", []):
+                if getattr(o, "TypeId", "") == "Spreadsheet::Sheet":
+                    sheet = o
+                    break
+    if isinstance(sheet, str) and doc:
+        sheet = doc.getObject(sheet)
+    if not sheet:
+        return {}
+
+    cells = {}
+    addrs = getattr(sheet, "getNonEmptyCells", lambda: [])()
+    if not addrs and hasattr(sheet, "getUsedCells"):
+        addrs = sheet.getUsedCells()
+
+    for addr in addrs:
+        alias = sheet.getAlias(addr) or None
+        try:
+            formula = sheet.getContents(addr)
+        except Exception:
+            formula = None
+        try:
+            val = sheet.get(addr)
+        except Exception:
+            val = None
+        cells[addr] = {"alias": alias, "formula": formula, "value": val}
+    return cells
+
+
+def _cad_get_expressions(obj):
+    """Safely retrieve parametric expressions list of (property, expression) tuples from any document object."""
+    if isinstance(obj, str) and FreeCAD.ActiveDocument:
+        obj = FreeCAD.ActiveDocument.getObject(obj)
+    return getattr(obj, "ExpressionEngine", [])
+
+
 def _cad_pad_sketch(sketch, length=10.0, name="Pad", reversed=False):
     """Pad a sketch within its PartDesign Body."""
     doc = getattr(sketch, "Document", None) or FreeCAD.ActiveDocument
@@ -365,6 +406,9 @@ class ExecutePythonOpsHandler(BaseHandler):
         self._python_namespace["create_sketch"] = _cad_create_sketch
         self._python_namespace["add_rectangle"] = _cad_add_rectangle
         self._python_namespace["pad_sketch"] = _cad_pad_sketch
+        self._python_namespace["get_spreadsheet_cells"] = _cad_get_spreadsheet_cells
+        self._python_namespace["inspect_spreadsheet"] = _cad_get_spreadsheet_cells
+        self._python_namespace["get_expressions"] = _cad_get_expressions
         self._python_namespace["recompute"] = lambda: FreeCAD.ActiveDocument.recompute() if FreeCAD.ActiveDocument else None
 
         namespace = self._python_namespace

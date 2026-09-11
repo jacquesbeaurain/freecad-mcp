@@ -905,6 +905,17 @@ class CopilotSettingsDialog(QtWidgets.QDialog):
         lbl_note.setWordWrap(True)
         lbl_note.setTextFormat(QtCore.Qt.RichText)
         layout_exec.addWidget(lbl_note)
+
+        layout_turns = QtWidgets.QHBoxLayout()
+        lbl_turns = QtWidgets.QLabel("Max Tool Execution Steps (Turns):", group_exec)
+        self.spin_max_turns = QtWidgets.QSpinBox(group_exec)
+        self.spin_max_turns.setRange(5, 100)
+        self.spin_max_turns.setValue(int(get_setting("max_turns", 30)))
+        layout_turns.addWidget(lbl_turns)
+        layout_turns.addWidget(self.spin_max_turns)
+        layout_turns.addStretch()
+        layout_exec.addLayout(layout_turns)
+
         layout.addWidget(group_exec)
 
         # 2. Model & API Key
@@ -972,6 +983,12 @@ class CopilotSettingsDialog(QtWidgets.QDialog):
         QtWidgets.QMessageBox.information(self, "History Cleared", "Command history has been cleared.")
 
     def _on_save(self):
+        # Save max turns setting
+        max_turns = int(self.spin_max_turns.value())
+        set_setting("max_turns", max_turns)
+        if hasattr(self.dock_widget, "worker") and self.dock_widget.worker:
+            self.dock_widget.worker.max_turns = max_turns
+
         # Save auto-save setting
         auto_save = self.chk_auto_save.isChecked()
         set_setting("auto_save_on_execute", auto_save)
@@ -1313,8 +1330,9 @@ class AICopilotDockWidget(QtWidgets.QDockWidget):
         # Open atomic undo transaction for this user turn
         self.tool_bridge.begin_turn_transaction(prompt)
 
-        # Enqueue prompt to background worker
-        self.worker.submit_prompt(prompt, selection_ctx)
+        # Enqueue prompt to background worker with configured max_turns
+        max_turns = int(get_setting("max_turns", 30))
+        self.worker.submit_prompt(prompt, selection_ctx, max_turns=max_turns)
 
     def _on_stop_clicked(self):
         self.worker.stop()

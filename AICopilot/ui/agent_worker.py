@@ -38,9 +38,17 @@ GUIDELINES:
 4. Tool Calling: You have access to native FreeCAD tools (partdesign_operations, sketch_operations, cam_operations, cam_tools, spreadsheet_operations, part_operations, measurement_operations, spatial_query, and execute_python). Invoke these tools to inspect and modify the model directly.
    - For PartDesign primitives: Use `partdesign_operations(operation="additive_box", length=100, width=100, height=100)` or `additive_cylinder`, `additive_sphere`.
    - For Part CSG primitives: Use `part_operations(operation="create_box", length=100, width=100, height=100)` or `create_cylinder`, `create_sphere`.
-   - For CAM (CNC) Operations: ALWAYS prefer `cam_operations` over raw scripting!
+   - For Parametric Spreadsheets: ALWAYS prefer `spreadsheet_operations` over raw scripting!
+     • Inspect all cells, aliases, formulas, and values in 1 step: `spreadsheet_operations(operation="inspect_sheet")`.
+     • Set cell: `spreadsheet_operations(operation="set_cell", cell="B4", value="12.7 mm")`.
+     • Set alias: `spreadsheet_operations(operation="set_alias", cell="B4", alias="BitDiameter")`.
+     • Object Expressions: In FreeCAD Python, parametric expressions on document objects reside in `obj.ExpressionEngine` (a list of `(property_name, expression_string)` tuples), NOT `obj.Expressions`.
+   - For CAM (CNC) Operations: ALWAYS prefer `cam_operations` and `cam_tools` over raw scripting!
      • Create Job: `cam_operations(operation="create_job", base_object="<model_name>")` (e.g. base_object="Wood").
+     • Facing / Jointing: `cam_operations(operation="face", job_name="Job", base_object="<model_name>", faces=["<top_face>"], cut_mode="Climb", step_over=50, step_down=0.5, clear_edges=True)`.
+       Note: For facing/jointing narrow stock, `clear_edges=True` is vital so the cutter clears the stock boundary.
      • Add Operations: `cam_operations(operation="surface", job_name="Job")` for 3D surfacing, `operation="profile"` for contours, `operation="pocket"` for pockets, `operation="drilling"` for holes.
+     • Tool Library: `cam_tools(operation="create_tool", name="<tool_name>", tool_type="endmill", diameter=12.7, cutting_edge_height=25.0)`.
      • In FreeCAD 1.0+, CAM modules live under `Path.Main.Job` and `Path.Op.*` (do not import legacy `PathScripts`).
 5. Python Scripting Rules (execute_python):
    - Built-in CAD Helpers: execute_python includes pre-loaded namespace helpers for clean 1-step geometry:
@@ -131,12 +139,13 @@ class CopilotAgentWorker(QtCore.QThread):
             self.history.clear()
         self.sig_status.emit("History cleared")
 
-    def submit_prompt(self, user_prompt: str, selection_context: Optional[str] = None):
+    def submit_prompt(self, user_prompt: str, selection_context: Optional[str] = None, max_turns: Optional[int] = None):
         """Enqueue a user prompt to be processed by the background thread."""
         with self._queue_lock:
             self._prompt_queue.append({
                 "prompt": user_prompt,
                 "selection": selection_context,
+                "max_turns": max_turns,
             })
             self._queue_event.set()
 
@@ -248,7 +257,18 @@ class CopilotAgentWorker(QtCore.QThread):
             tool_count = 0
             accumulated_response = ""
             accumulated_thought = ""
-            max_turns = 10  # Guard against infinite tool recursion
+            task_max_turns = task.get("max_turns")
+            if task_max_turns is None or task_max_turns <= 0:
+                try:
+                    from ..settings import get_setting
+                except (ImportError, ValueError):
+                    try:
+                        from AICopilot.settings import get_setting
+                    except (ImportError, ValueError):
+                        from settings import get_setting
+                task_max_turns = get_setting("max_turns", 30)
+            max_turns = int(task_max_turns)
+            initial_max_turns = max_turns
             active_model = self.model_name
 
             while not turn_done and max_turns > 0 and not self._stop_requested:
@@ -394,6 +414,44 @@ class CopilotAgentWorker(QtCore.QThread):
                 else:
                     # Model produced a final textual response without further tool calls
                     turn_done = True
+
+            if not turn_done and not self._stop_requested and max_turns <= 0:
+                logger.warning(f"Turn limit reached ({initial_max_turns}). Requesting summary from model.")
+                self.sig_status.emit("Step limit reached, generating summary...")
+                try:
+                    summary_prompt = types.Content(
+                        role="user",
+                        parts=[types.Part.from_text(
+                            text=f"Note: You have reached the maximum allowed tool execution steps ({initial_max_turns}). "
+                                 "Please provide a clear and concise summary for the user detailing: "
+                                 "1) What has been completed so far, "
+                                 "2) What operations or parameters were attempted and any errors encountered, and "
+                                 "3) What remaining steps the user or Copilot should perform next."
+                        )]
+                    )
+                    self.history.append(summary_prompt)
+                    sum_resp = client.models.generate_content(
+                        model=active_model,
+                        contents=self.history,
+                        config=types.GenerateContentConfig(
+                            system_instruction=SYSTEM_INSTRUCTION,
+                            temperature=0.2,
+                            thinking_config=thinking_cfg,
+                        )
+                    )
+                    if sum_resp.candidates and sum_resp.candidates[0].content:
+                        self.history.append(sum_resp.candidates[0].content)
+                        for part in sum_resp.candidates[0].content.parts:
+                            if part.text:
+                                self.sig_token.emit(part.text)
+                                accumulated_response += part.text
+                except Exception as sum_err:
+                    fallback_msg = (
+                        f"\n\n*(Reached maximum tool execution steps limit: {initial_max_turns}. "
+                        "Please check the executed steps above or submit a follow-up prompt.)*"
+                    )
+                    self.sig_token.emit(fallback_msg)
+                    accumulated_response += fallback_msg
 
             total_duration = time.time() - turn_start_time
             metrics = {
