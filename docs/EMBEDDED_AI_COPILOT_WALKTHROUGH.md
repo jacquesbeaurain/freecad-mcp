@@ -46,6 +46,10 @@ Refined controls for Light and Classic themes with read-only syntax-styled multi
 When `part_operations` encountered the `create_box` mismatch, the Copilot gracefully fell back to `execute_python`, adhered to canonical solid modeling rules, verified geometry health, and successfully created a valid 6-faced solid `Part::Box` with 100x100x100mm dimensions and 1,000,000 mm³ volume:
 ![Live 100mm Cube Creation via Python Fallback](img/cube_fallback_verification.png)
 
+### Live CAM Dev Build `MillFacing` Operation with GUI TaskPanel & 3D Toolpaths
+In recent FreeCAD dev builds, `CAM_MillFacing` is the modern facing operation. With native `ViewProvider` attachment in GUI mode, the operation displays its proper CAM icon, renders toolpath passes in 3D (`Visibility = True`), and opens the native operation task panel on double-click (`setEdit` returns `True`):
+![Live CAM MillFacing with Attached ViewProvider](img/cam_millfacing_verified.png)
+
 ---
 
 ## 3. Git Commit History in `freecad-mcp`
@@ -94,6 +98,9 @@ The implementation was delivered across clean, well-documented commits following
 | [`d899a5d`](../../../commit/d899a5d) | `fix(ui): resolve startup import error for dock widget and ensure dock visibility on launch` | [`../AICopilot/InitGui.py`](../AICopilot/InitGui.py), [`../AICopilot/handlers/base.py`](../AICopilot/handlers/base.py), [`../AICopilot/handlers/execute_python_ops.py`](../AICopilot/handlers/execute_python_ops.py), [`../AICopilot/ui/dock_widget.py`](../AICopilot/ui/dock_widget.py) |
 | [`e4f0c21`](../../../commit/e4f0c21) | `docs(copilotui): document startup import fix and dock visibility in walkthrough` | [`EMBEDDED_AI_COPILOT_WALKTHROUGH.md`](EMBEDDED_AI_COPILOT_WALKTHROUGH.md), [`img/copilot_dock_visible_live.png`](img/copilot_dock_visible_live.png) |
 | [`6976a33`](../../../commit/6976a33) | `feat(cam): add configurable max turns, safe spreadsheet inspection, and feeds/speeds defaults` | [`../AICopilot/handlers/base.py`](../AICopilot/handlers/base.py), [`../AICopilot/handlers/cam_ops.py`](../AICopilot/handlers/cam_ops.py), [`../AICopilot/handlers/cam_tool_controllers.py`](../AICopilot/handlers/cam_tool_controllers.py), [`../AICopilot/handlers/execute_python_ops.py`](../AICopilot/handlers/execute_python_ops.py), [`../AICopilot/handlers/spreadsheet_ops.py`](../AICopilot/handlers/spreadsheet_ops.py), [`../AICopilot/settings.py`](../AICopilot/settings.py), [`../AICopilot/ui/agent_worker.py`](../AICopilot/ui/agent_worker.py), [`../AICopilot/ui/dock_widget.py`](../AICopilot/ui/dock_widget.py), [`../AICopilot/ui/tool_bridge.py`](../AICopilot/ui/tool_bridge.py), [`../tests/unit/test_copilot_dock_widget.py`](../tests/unit/test_copilot_dock_widget.py) |
+| [`6dd6830`](../../../commit/6dd6830) | `docs(copilotui): update walkthrough with CAM jointing, max turns, feeds/speeds, and safe spreadsheet inspection` | [`EMBEDDED_AI_COPILOT_WALKTHROUGH.md`](EMBEDDED_AI_COPILOT_WALKTHROUGH.md), [`img/wood_cam_toolpath_live.png`](img/wood_cam_toolpath_live.png) |
+| [`b66014c`](../../../commit/b66014c) | `feat(cam): support dev build CAM_MillFacing and attach ViewProvider for GUI editability` | [`../AICopilot/compat_pathscripts.py`](../AICopilot/compat_pathscripts.py), [`../AICopilot/freecad_mcp_handler.py`](../AICopilot/freecad_mcp_handler.py), [`../AICopilot/handlers/cam_ops.py`](../AICopilot/handlers/cam_ops.py), [`../AICopilot/handlers/execute_python_ops.py`](../AICopilot/handlers/execute_python_ops.py), [`../AICopilot/ui/agent_worker.py`](../AICopilot/ui/agent_worker.py), [`../tests/unit/test_copilot_dock_widget.py`](../tests/unit/test_copilot_dock_widget.py), [`../tests/unit/test_pathscripts_compat.py`](../tests/unit/test_pathscripts_compat.py) |
+| [fd063cb](../../../commit/fd063cb) | docs(copilotui): document CAM dev build MillFacing support and ViewProvider editability in walkthrough | [EMBEDDED_AI_COPILOT_WALKTHROUGH.md](EMBEDDED_AI_COPILOT_WALKTHROUGH.md), [img/cam_millfacing_verified.png](img/cam_millfacing_verified.png) |
 ---
 
 ## 4. Problem Diagnostics & Root Cause Fixes
@@ -581,9 +588,72 @@ When executing complex CAM tasks against parametric models (such as jointing the
 ### 4. Verification Results
 - All 62 unit tests passed:
   ```powershell
-  & "D:epos\oth\FreeCADuildeleasein\python.exe" -m pytest tests/unit/test_copilot_dock_widget.py tests/unit/test_pathscripts_compat.py
+  & "D:
+epos\oth\FreeCADuild
+eleasein\python.exe" -m pytest tests/unit/test_copilot_dock_widget.py tests/unit/test_pathscripts_compat.py
   ```
 - Verified `test_default_feeds_and_speeds_heuristic`: verified RPM clamping, feedrate ratios, and unit conversions for Wood, Aluminum, and Steel.
 - Verified `test_settings_max_turns_persistence`: verified default 30 turns and persistence.
 - Verified `test_spreadsheet_inspect_sheet_and_safe_get`: verified single-call inspection and safe `get_cell` on unassigned cells.
 - Verified live FreeCAD CAM generation: `Job` created with `MillFace` generating 416 toolpath commands and populated feeds/speeds.
+
+## 12. CAM Dev Build `MillFacing` Support & GUI TaskPanel Editability
+
+### 1. The Problem in Recent FreeCAD Dev Builds
+- **Module & Operation Renaming**: In recent FreeCAD dev builds (0.22+ / 1.1 dev build 48552+), the facing operation on the CAM toolbar was renamed to `CAM_MillFacing` (`Path.Op.MillFacing`, `Path.Op.Gui.MillFacing`), whereas in 1.1.x release builds it was `CAM_MillFace` (`Path.Op.MillFace`, `Path.Op.Gui.MillFace`).
+- **Missing ViewProvider & GUI Uneditability**: When operations were generated programmatically via `Create(...)` in the engine module, FreeCAD created only the underlying C++ / Python data feature (`FeaturePython`). Without attaching the native GUI `ViewProvider` (`Path.Op.Gui.Base.ViewProvider(op.ViewObject, cmd.res)`), the operation appeared without an icon, toolpaths remained invisible in 3D (`Visibility = False`), and double-clicking the operation failed to open the native TaskPanel (`setEdit` returned `False`).
+- **Job ViewProvider Dependency**: `Path.Op.Gui.Base.ViewProvider.setupTaskPanel` requires the parent `Job` to have an attached `ViewProvider` with `Gui::ViewProviderGroupExtensionPython`. If `job.ViewObject.Proxy` was `None`, double-clicking an operation raised:
+  ```python
+  AttributeError: 'NoneType' object has no attribute 'setupEditVisibility'
+  ```
+- **Absence of `op.Base` Attribute**: `MillFacing` derives its bounding geometry directly from the Job stock (`self.stock.Shape.slice(...)`) and does not expose an `op.Base` property. Direct assignment to `op.Base` crashed with:
+  ```python
+  AttributeError: 'FeaturePython' object has no attribute 'Base'
+  ```
+
+### 2. Architectural Implementation
+
+#### A. Multi-Version Facing Operation Prioritization
+- In [`AICopilot/compat_pathscripts.py`](../AICopilot/compat_pathscripts.py):
+  - Updated `_OP_MODULE_MAP` so `"face"`, `"facing"`, `"mill_facing"`, and `"mill_face"` prioritize `Path.Op.MillFacing` first, with clean fallback to `Path.Op.MillFace`, `Path.Op.Face`, and `PathScripts.PathMillFace`.
+  - Updated `_CAM_MODULE_REDIRECTS` to support tuple redirect targets `("Path.Op.MillFacing", "Path.Op.MillFace")` for `Path.Op.Face`, `Path.Op.Facing`, `Path.Face`, `Path.Facing`, and `PathScripts.PathMillFace`.
+  - Updated `CAMModuleCompatFinder.find_spec`, `_RedirectLoader.create_module`, and package `__getattr__` wrappers to iterate candidate targets gracefully.
+
+#### B. Dynamic GUI Command Resource Resolution
+- Implemented `get_op_viewprovider_resources(op_name)` in [`AICopilot/compat_pathscripts.py`](../AICopilot/compat_pathscripts.py):
+  - Resolves `CommandResources` (`res`) from `Path.Op.Gui.<OpName>.Command.res` across modern and legacy module paths (`MillFacing`, `MillFace`, `PocketShape`, `Profile`, `Drilling`, `Adaptive`, `Surface`, `Helix`, etc.).
+
+#### C. Automatic ViewProvider Attachment in GUI Mode
+- In [`AICopilot/handlers/cam_ops.py`](../AICopilot/handlers/cam_ops.py) (`_create_path_op`):
+  - **Job ViewProvider Setup**: Automatically ensures the parent `Job` has its `ViewProvider` attached (`Path.Main.Gui.Job.ViewProvider` with `Gui::ViewProviderGroupExtensionPython`) so `setupEditVisibility` succeeds.
+  - **Operation ViewProvider Setup**: Resolves `res` via `get_op_viewprovider_resources`, instantiates `PathOpGui.ViewProvider(op.ViewObject, res)`, sets `vp.deleteOnReject = False`, binds `op.ViewObject.Proxy = vp`, and sets `op.ViewObject.Visibility = True`.
+  - **Guarded Base Property**: Wrapped base object binding in `if hasattr(op, 'Base'):` to prevent attribute crashes on `MillFacing`.
+
+#### D. Modern `MillFacing` Parameter Support
+- Expanded `face()` in [`AICopilot/handlers/cam_ops.py`](../AICopilot/handlers/cam_ops.py) to support:
+  - `CutMode`: `Climb` vs `Conventional`
+  - `ClearingPattern`: `Directional`, `ZigZag`, `Spiral`, `Bidirectional`
+  - `StepOver`: percentage integer or float
+  - `StepDown`: depth per pass
+  - `PassExtension`, `StockExtension`, `AxialStockToLeave`, and `Angle`
+  - Added method aliases `mill_facing = face` and `facing = face`.
+
+#### E. Python Namespace Helper & Module Hot-Reloading
+- In [`AICopilot/handlers/execute_python_ops.py`](../AICopilot/handlers/execute_python_ops.py): added `_cad_attach_cam_viewprovider(op, job=None)` and exposed `attach_cam_viewprovider` in the Python execution namespace.
+- In [`AICopilot/freecad_mcp_handler.py`](../AICopilot/freecad_mcp_handler.py): updated `_reload_handlers()` to reload `compat_pathscripts` and `AICopilot.compat_pathscripts` before reloading handler modules so newly added exports are immediately available after hot-reload.
+
+### 3. Visual Verification
+
+| Live CAM MillFacing Operation on `surface_and_joint.FCStd` |
+|---|
+| ![Live CAM MillFacing with Attached ViewProvider](img/cam_millfacing_verified.png) |
+
+### 4. Verification Results
+- All 65 unit tests passed:
+  ```powershell
+  & "D:\repos\oth\FreeCAD\build\release\bin\python.exe" -m pytest tests/unit/test_copilot_dock_widget.py tests/unit/test_pathscripts_compat.py
+  ```
+- Verified `test_cam_millfacing_viewprovider_and_parameter_wiring`: validates `CutMode="Climb"`, `ClearingPattern="Directional"`, `StepOver=50`, `StepDown=0.5`, `PassExtension=3.0`, `StockExtension=1.0`, ViewProvider assignment, and `setEdit(op_vo, 0) == True`.
+- Verified `test_get_op_viewprovider_resources`: validates dynamic resolution of `CommandResources` from `Path.Op.Gui.*`.
+- Verified `test_path_op_face_resolves_to_millfacing_when_available`: validates dev build `MillFacing` prioritization.
+- Live FreeCAD verification: `cam_operations(operation="face", job_name="Job", cut_mode="Climb", stepover=50)` created `MillFacing` in `Job`, attached `Path.Op.Gui.Base.ViewProvider`, rendered 24 toolpath passes along the entire top workpiece face in 3D, and successfully opened and reset the task panel editor via `setEdit`.
