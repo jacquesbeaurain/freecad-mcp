@@ -1802,7 +1802,7 @@ class FreeCADSocketServer:
 
         try:
             # Reload compat_pathscripts first if already imported
-            for cp_name in ('compat_pathscripts', 'AICopilot.compat_pathscripts'):
+            for cp_name in ('compat_pathscripts', 'AICopilot.compat_pathscripts', 'settings', 'AICopilot.settings'):
                 if cp_name in sys.modules and sys.modules[cp_name]:
                     try:
                         _reload(cp_name, sys.modules[cp_name])

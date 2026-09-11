@@ -1338,3 +1338,153 @@ def test_get_op_viewprovider_resources():
         assert res_face == fake_res
     finally:
         sys.modules.pop("Path.Op.Gui.MillFacing", None)
+
+
+def test_conversation_history_settings_helpers(tmp_path, monkeypatch):
+    """Verify settings.py helpers for loading, saving, capping, and clearing conversation history."""
+    import AICopilot.settings as s
+    settings_file = tmp_path / "settings.json"
+    monkeypatch.setenv("AICOPILOT_SETTINGS_PATH", str(settings_file))
+
+    # Initial load is empty
+    assert s.load_conversation_history() == []
+
+    turns = [
+        {"prompt": f"Prompt {i}", "response": f"Response {i}", "timestamp": 1000 + i}
+        for i in range(10)
+    ]
+    assert s.save_conversation_history(turns, max_turns=5) is True
+
+    # Check capping at max_turns=5
+    loaded = s.load_conversation_history()
+    assert len(loaded) == 5
+    assert loaded[0]["prompt"] == "Prompt 5"
+    assert loaded[-1]["prompt"] == "Prompt 9"
+
+    # Verify LF line endings in written settings.json
+    with open(settings_file, "rb") as fp:
+        raw = fp.read()
+    assert b"\r\n" not in raw
+    assert b"\n" in raw
+
+    # Clear history
+    assert s.clear_conversation_history() is True
+    assert s.load_conversation_history() == []
+
+
+def test_agent_worker_history_serialization_roundtrip():
+    """Verify CopilotAgentWorker history serialization and deserialization."""
+    from AICopilot.ui.agent_worker import CopilotAgentWorker
+
+    mock_bridge = MagicMock()
+    worker = CopilotAgentWorker(mock_bridge)
+
+    assert worker.get_history_length() == 0
+    assert worker.get_history_dicts() == []
+
+    # Mock content items
+    content1 = {
+        "role": "user",
+        "parts": [{"text": "Create a 10mm box"}]
+    }
+    content2 = {
+        "role": "model",
+        "parts": [{"text": "Created box Box001"}]
+    }
+    worker.load_history_dicts([content1, content2])
+
+    assert worker.get_history_length() == 2
+    dicts = worker.get_history_dicts()
+    assert len(dicts) == 2
+    assert dicts[0]["role"] == "user"
+    assert dicts[1]["role"] == "model"
+
+    # Slicing recent turn contents
+    recent = worker.get_recent_turn_contents(1)
+    assert len(recent) == 1
+    assert recent[0]["role"] == "model"
+
+
+def test_dock_widget_conversation_history_persistence_and_restore(mock_freecad, qapp, tmp_path, monkeypatch):
+    """Verify dock widget serializes turns to settings and restores them upon recreation (restart)."""
+    import AICopilot.settings as s
+    from AICopilot.ui.dock_widget import AICopilotDockWidget, TurnCardWidget, QtWidgets
+
+    settings_file = tmp_path / "settings.json"
+    monkeypatch.setenv("AICOPILOT_SETTINGS_PATH", str(settings_file))
+
+    # 1. First session: instantiate widget and execute a full turn
+    w1 = AICopilotDockWidget()
+    try:
+        w1.input_edit.setPlainText("Design a mounting bracket")
+        w1._on_send_clicked()
+
+        w1._on_thought_received("Analyzing geometry requirements...")
+        w1._on_tool_started("partdesign_operations", {"operation": "create_body", "body_name": "Bracket"})
+        w1._on_tool_finished("partdesign_operations", '{"success": true, "result": "Body Bracket created"}')
+        w1._on_notice_received("<div style='color: green;'>Operation completed successfully</div>")
+        w1._on_token_received("Bracket body created.")
+
+        metrics = {"total_duration": 1.5, "work_duration": 0.8, "thought_duration": 0.5, "tool_count": 1}
+        w1._on_turn_complete("Bracket body created.", metrics)
+
+        # Verify settings were saved to disk
+        saved = s.load_conversation_history()
+        assert len(saved) == 1
+        assert saved[0]["prompt"] == "Design a mounting bracket"
+        assert saved[0]["response"] == "Bracket body created."
+        assert saved[0]["thoughts"] == "Analyzing geometry requirements..."
+        assert len(saved[0]["work_items"]) == 3  # tool_call, tool_result, notice
+        assert saved[0]["metrics"]["tool_count"] == 1
+    finally:
+        w1.worker.stop()
+        w1.close()
+
+    # 2. Second session (simulating FreeCAD restart): instantiate new widget
+    w2 = AICopilotDockWidget()
+    try:
+        # Check that saved turns were restored into w2._turns_data
+        assert len(w2._turns_data) == 1
+        assert w2._turns_data[0]["prompt"] == "Design a mounting bracket"
+
+        # Check that a TurnCardWidget was reconstructed in chat_stream
+        cards = [
+            w2.chat_stream.layout.itemAt(i).widget()
+            for i in range(w2.chat_stream.layout.count())
+            if isinstance(w2.chat_stream.layout.itemAt(i).widget(), TurnCardWidget)
+        ]
+        assert len(cards) == 1
+        card = cards[0]
+        assert "Design a mounting bracket" in card.user_box.findChildren(QtWidgets.QLabel)[0].text()
+        assert card.thought_section is not None
+        assert card.work_section is not None
+        assert card.thought_section.is_collapsed() is True
+        assert card.work_section.is_collapsed() is True
+        assert "Bracket body created." in card.response_label.text()
+    finally:
+        w2.worker.stop()
+        w2.close()
+
+
+def test_dock_widget_clear_history_clears_settings(qapp, tmp_path, monkeypatch):
+    """Verify that clicking Clear purges both in-memory turns and settings.json."""
+    import AICopilot.settings as s
+    from AICopilot.ui.dock_widget import AICopilotDockWidget
+
+    settings_file = tmp_path / "settings.json"
+    monkeypatch.setenv("AICOPILOT_SETTINGS_PATH", str(settings_file))
+
+    # Pre-populate history
+    s.save_conversation_history([{"prompt": "Old prompt", "response": "Old response"}])
+    assert len(s.load_conversation_history()) == 1
+
+    w = AICopilotDockWidget()
+    try:
+        assert len(w._turns_data) == 1
+        # Click Clear
+        w._on_clear_clicked()
+        assert len(w._turns_data) == 0
+        assert s.load_conversation_history() == []
+    finally:
+        w.worker.stop()
+        w.close()

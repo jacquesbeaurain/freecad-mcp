@@ -14,6 +14,7 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     "selected_model": "gemini-3.6-flash",
     "command_history": [],
     "max_turns": 30,
+    "conversation_history": [],
 }
 
 
@@ -105,3 +106,23 @@ def append_command_history(prompt: str, max_items: int = 100) -> List[str]:
 def clear_command_history() -> bool:
     """Clear persisted command history."""
     return set_setting("command_history", [])
+
+
+def load_conversation_history() -> List[Dict[str, Any]]:
+    """Load persisted conversation history turns from settings."""
+    history = get_setting("conversation_history", [])
+    return list(history) if isinstance(history, list) else []
+
+
+def save_conversation_history(history: List[Dict[str, Any]], max_turns: int = 50) -> bool:
+    """Save conversation history turns to settings, capped at max_turns."""
+    if not isinstance(history, list):
+        return False
+    if len(history) > max_turns:
+        history = history[-max_turns:]
+    return set_setting("conversation_history", history)
+
+
+def clear_conversation_history() -> bool:
+    """Clear persisted conversation history from settings."""
+    return set_setting("conversation_history", [])

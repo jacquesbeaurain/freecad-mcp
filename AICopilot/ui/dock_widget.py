@@ -14,6 +14,7 @@ import logging
 import os
 import re
 import threading
+import time
 from typing import Any, Dict, List, Optional
 
 try:
@@ -34,8 +35,11 @@ try:
     from ..settings import (
         append_command_history,
         clear_command_history,
+        clear_conversation_history,
         get_setting,
         get_settings_file_path,
+        load_conversation_history,
+        save_conversation_history,
         set_setting,
     )
 except (ImportError, ValueError):
@@ -43,16 +47,22 @@ except (ImportError, ValueError):
         from AICopilot.settings import (
             append_command_history,
             clear_command_history,
+            clear_conversation_history,
             get_setting,
             get_settings_file_path,
+            load_conversation_history,
+            save_conversation_history,
             set_setting,
         )
     except (ImportError, ValueError):
         from settings import (
             append_command_history,
             clear_command_history,
+            clear_conversation_history,
             get_setting,
             get_settings_file_path,
+            load_conversation_history,
+            save_conversation_history,
             set_setting,
         )
 
@@ -591,6 +601,10 @@ class CollapsibleSection(QtWidgets.QWidget):
         self.toggle_btn.setChecked(self._is_expanded)
         self._update_arrow()
 
+    def is_collapsed(self) -> bool:
+        """Return True if section content is currently collapsed."""
+        return not self._is_expanded
+
     def set_title(self, title: str):
         self.title_text = title
         self._update_arrow()
@@ -1025,6 +1039,9 @@ class AICopilotDockWidget(QtWidgets.QDockWidget):
     sig_models_discovered = QtCore.Signal(list)
     _active_turn_card: Optional[Any] = None
     chat_stream: Optional[Any] = None
+    _turns_data: Optional[List[Dict[str, Any]]] = None
+    _current_turn_data: Optional[Dict[str, Any]] = None
+    _turn_history_start_len: int = 0
 
     def __init__(self, parent=None):
         super().__init__("AI Copilot", parent)
@@ -1037,9 +1054,13 @@ class AICopilotDockWidget(QtWidgets.QDockWidget):
         self._active_turn_card: Optional[TurnCardWidget] = None
         self._selection_observer = None
         self._last_submitted_prompt: Optional[str] = None
+        self._turns_data: List[Dict[str, Any]] = []
+        self._current_turn_data: Optional[Dict[str, Any]] = None
+        self._turn_history_start_len: int = 0
 
         self._init_ui()
         self._wire_signals()
+        self._restore_conversation_history()
         self._attach_selection_observer()
         self._refresh_models_from_api()
 
@@ -1224,7 +1245,105 @@ class AICopilotDockWidget(QtWidgets.QDockWidget):
         layout.addLayout(input_layout)
 
         self.setWidget(container)
-        self._append_system_message("<b>FreeCAD AI Copilot ready.</b> Type a prompt or select geometry in the 3D view.")
+
+
+    # ── Conversation History Persistence ─────────────────────────────
+
+    def _persist_conversation_history(self):
+        """Persist conversation history turns to settings.json."""
+        try:
+            save_conversation_history(self._turns_data)
+        except Exception as e:
+            logger.warning("Failed to persist conversation history: %s", e)
+
+    def _restore_conversation_history(self):
+        """Restore previous conversation turns and agent context from settings."""
+        try:
+            saved_turns = load_conversation_history()
+        except Exception as e:
+            logger.warning("Failed to load conversation history: %s", e)
+            saved_turns = []
+
+        if not saved_turns:
+            self._append_system_message("<b>FreeCAD AI Copilot ready.</b> Type a prompt or select geometry in the 3D view.")
+            return
+
+        self._turns_data = list(saved_turns)
+        restored_count = 0
+        all_agent_contents = []
+
+        for turn_data in self._turns_data:
+            try:
+                self._restore_turn_card(turn_data)
+                restored_count += 1
+                all_agent_contents.extend(turn_data.get("agent_contents", []))
+            except Exception as e:
+                logger.warning("Failed to restore turn card: %s", e)
+
+        if all_agent_contents:
+            try:
+                self.worker.load_history_dicts(all_agent_contents)
+            except Exception as e:
+                logger.warning("Failed to restore worker history: %s", e)
+
+        if restored_count > 0:
+            s_plural = "s" if restored_count != 1 else ""
+            self._append_system_message(
+                f"<b>Restored {restored_count} previous turn{s_plural}.</b> Context is preserved. Ready for prompts."
+            )
+        else:
+            self._append_system_message("<b>FreeCAD AI Copilot ready.</b> Type a prompt or select geometry in the 3D view.")
+
+    def _restore_turn_card(self, data: Dict[str, Any]):
+        """Reconstruct a TurnCardWidget from persisted turn data."""
+        prompt = data.get("prompt", "")
+        selection_badge = data.get("selection_summary") or data.get("selection_badge")
+        card = TurnCardWidget(prompt, selection_badge)
+
+        # 1. Restore thoughts
+        thoughts = data.get("thoughts", "")
+        if thoughts:
+            ts = card.ensure_thought_section()
+            ts.append_thought(thoughts)
+            thought_dur = data.get("metrics", {}).get("thought_duration", 0.0)
+            ts.finish(thought_dur)
+            ts.set_collapsed(True)
+
+        # 2. Restore work section (tools, results, notices)
+        work_items = data.get("work_items", [])
+        if work_items:
+            ws = card.ensure_work_section()
+            for item in work_items:
+                itype = item.get("type")
+                if itype == "tool_call":
+                    ws.add_tool_call(item.get("name", "tool"), item.get("args", {}))
+                elif itype == "tool_result":
+                    ws.add_tool_result(item.get("name", "tool"), item.get("result", "{}"))
+                elif itype == "notice":
+                    ws.add_notice(item.get("text", ""))
+            work_dur = data.get("metrics", {}).get("work_duration", 0.0)
+            tool_cnt = data.get("metrics", {}).get("tool_count", ws._tool_count)
+            ws.finish(work_dur, tool_cnt)
+            ws.set_collapsed(True)
+
+        # 3. Restore final assistant response or error
+        error = data.get("error")
+        response = data.get("response", "")
+        if error:
+            card.show_error(error)
+            thought_dur = data.get("metrics", {}).get("thought_duration", 0.0)
+            if card.thought_section:
+                card.thought_section.finish(thought_dur)
+                card.thought_section.set_collapsed(True)
+            if card.work_section:
+                work_dur = data.get("metrics", {}).get("work_duration", 0.0)
+                tool_cnt = data.get("metrics", {}).get("tool_count", card.work_section._tool_count)
+                card.work_section.finish(work_dur, tool_cnt)
+                card.work_section.set_collapsed(True)
+        elif response:
+            card.finish_turn(response, data.get("metrics", {}))
+
+        self.chat_stream.add_turn_card(card)
 
     def _wire_signals(self):
         self.sig_models_discovered.connect(self._apply_model_list)
@@ -1260,7 +1379,7 @@ class AICopilotDockWidget(QtWidgets.QDockWidget):
                 pass
 
     def _get_selection_summary(self) -> Optional[str]:
-        if not FreeCADGui or not FreeCAD.GuiUp:
+        if not FreeCADGui or not FreeCAD.GuiUp or not hasattr(FreeCADGui, "Selection"):
             return None
         sel_list = FreeCADGui.Selection.getSelectionEx()
         if not sel_list:
@@ -1327,6 +1446,18 @@ class AICopilotDockWidget(QtWidgets.QDockWidget):
         self.chat_stream.add_turn_card(self._active_turn_card)
         self._current_assistant_buffer = ""
 
+        self._turn_history_start_len = self.worker.get_history_length() if (hasattr(self, 'worker') and hasattr(self.worker, 'get_history_length')) else 0
+        self._current_turn_data = {
+            "prompt": prompt,
+            "selection_summary": selection_summary,
+            "thoughts": "",
+            "work_items": [],
+            "response": "",
+            "metrics": {},
+            "error": None,
+            "timestamp": time.time(),
+        }
+
         # Open atomic undo transaction for this user turn
         self.tool_bridge.begin_turn_transaction(prompt)
 
@@ -1338,9 +1469,16 @@ class AICopilotDockWidget(QtWidgets.QDockWidget):
         self.worker.stop()
         self.tool_bridge.abort_turn_transaction()
         self.status_label.setText("Stopping...")
-        if self._active_turn_card:
+        if getattr(self, '_active_turn_card', None):
             stop_msg = (self._current_assistant_buffer + "\n\n*(Operation stopped by user)*").strip()
             self._active_turn_card.finish_turn(stop_msg, {})
+            if getattr(self, '_current_turn_data', None) is not None:
+                self._current_turn_data["response"] = stop_msg
+                if not hasattr(self, '_turns_data') or self._turns_data is None:
+                    self._turns_data = []
+                self._turns_data.append(self._current_turn_data)
+                self._persist_conversation_history()
+                self._current_turn_data = None
             self._active_turn_card = None
         self.btn_stop.setEnabled(False)
         self.btn_send.setEnabled(True)
@@ -1348,6 +1486,9 @@ class AICopilotDockWidget(QtWidgets.QDockWidget):
     def _on_clear_clicked(self):
         self.worker.clear_history()
         self.chat_stream.clear()
+        self._turns_data.clear()
+        self._current_turn_data = None
+        clear_conversation_history()
         self._active_turn_card = None
         self._current_assistant_buffer = ""
         self._append_system_message("Conversation history cleared.")
@@ -1476,7 +1617,9 @@ class AICopilotDockWidget(QtWidgets.QDockWidget):
     # ── Worker Signal Handlers ───────────────────────────────────────
 
     def _on_thought_received(self, token: str):
-        if self._active_turn_card:
+        if getattr(self, '_current_turn_data', None) is not None:
+            self._current_turn_data["thoughts"] += token
+        if getattr(self, '_active_turn_card', None):
             self._active_turn_card.ensure_thought_section().append_thought(token)
 
     def _on_token_received(self, token: str):
@@ -1484,7 +1627,10 @@ class AICopilotDockWidget(QtWidgets.QDockWidget):
             self._on_notice_received(token)
             return
 
-        if self._active_turn_card:
+        if getattr(self, '_current_turn_data', None) is not None:
+            self._current_turn_data["response"] += token
+
+        if getattr(self, '_active_turn_card', None):
             if self._active_turn_card.work_section and not self._current_assistant_buffer:
                 self._active_turn_card.work_section.set_collapsed(True)
             self._active_turn_card.append_response_token(token)
@@ -1492,20 +1638,34 @@ class AICopilotDockWidget(QtWidgets.QDockWidget):
         self._current_assistant_buffer += token
 
     def _on_notice_received(self, notice: str):
-        if self._active_turn_card:
+        if getattr(self, '_current_turn_data', None) is not None:
+            self._current_turn_data["work_items"].append({"type": "notice", "text": notice})
+        if getattr(self, '_active_turn_card', None):
             self._active_turn_card.ensure_work_section().add_notice(notice)
 
     def _on_status_changed(self, status: str):
         self.status_label.setText(status)
 
     def _on_tool_started(self, tool_name: str, args: dict):
-        if self._active_turn_card:
+        if getattr(self, '_current_turn_data', None) is not None:
+            self._current_turn_data["work_items"].append({
+                "type": "tool_call",
+                "name": tool_name,
+                "args": dict(args) if isinstance(args, dict) else args,
+            })
+        if getattr(self, '_active_turn_card', None):
             if self._active_turn_card.thought_section:
                 self._active_turn_card.thought_section.set_collapsed(True)
             self._active_turn_card.ensure_work_section().add_tool_call(tool_name, args)
 
     def _on_tool_finished(self, tool_name: str, result_str: str):
-        if self._active_turn_card:
+        if getattr(self, '_current_turn_data', None) is not None:
+            self._current_turn_data["work_items"].append({
+                "type": "tool_result",
+                "name": tool_name,
+                "result": str(result_str),
+            })
+        if getattr(self, '_active_turn_card', None):
             self._active_turn_card.ensure_work_section().add_tool_result(tool_name, result_str)
 
     def _on_turn_complete(self, full_response: str, metrics: Optional[dict] = None):
@@ -1516,7 +1676,16 @@ class AICopilotDockWidget(QtWidgets.QDockWidget):
         if not self.error_frame.isVisible():
             self.status_label.setText("Ready")
 
-        if self._active_turn_card:
+        if getattr(self, '_current_turn_data', None) is not None:
+            self._current_turn_data["response"] = full_response
+            self._current_turn_data["metrics"] = dict(metrics or {})
+            self._current_turn_data["agent_contents"] = self.worker.get_recent_turn_contents(getattr(self, '_turn_history_start_len', 0)) if (hasattr(self, 'worker') and hasattr(self.worker, 'get_recent_turn_contents')) else []
+            if not hasattr(self, '_turns_data') or self._turns_data is None: self._turns_data = []
+            self._turns_data.append(self._current_turn_data)
+            self._persist_conversation_history()
+            self._current_turn_data = None
+
+        if getattr(self, '_active_turn_card', None):
             self._active_turn_card.finish_turn(full_response, metrics or {})
             self._active_turn_card = None
 
@@ -1528,7 +1697,14 @@ class AICopilotDockWidget(QtWidgets.QDockWidget):
         self.error_label.setText(cleaned_msg)
         self.error_frame.setVisible(True)
 
-        if self._active_turn_card:
+        if getattr(self, '_current_turn_data', None) is not None:
+            self._current_turn_data["error"] = cleaned_msg
+            if not hasattr(self, '_turns_data') or self._turns_data is None: self._turns_data = []
+            self._turns_data.append(self._current_turn_data)
+            self._persist_conversation_history()
+            self._current_turn_data = None
+
+        if getattr(self, '_active_turn_card', None):
             self._active_turn_card.show_error(cleaned_msg)
             self._active_turn_card = None
 

@@ -139,6 +139,71 @@ class CopilotAgentWorker(QtCore.QThread):
             self.history.clear()
         self.sig_status.emit("History cleared")
 
+    def get_history_length(self) -> int:
+        """Return the current length of the conversational history."""
+        with self._queue_lock:
+            return len(self.history)
+
+    def get_history_dicts(self) -> List[Dict[str, Any]]:
+        """Return all conversational history items as JSON-serializable dictionaries."""
+        with self._queue_lock:
+            return self._serialize_content_list(self.history)
+
+    def get_recent_turn_contents(self, start_index: int) -> List[Dict[str, Any]]:
+        """Return conversational history items added since start_index as JSON-serializable dicts."""
+        with self._queue_lock:
+            if start_index >= len(self.history):
+                return []
+            return self._serialize_content_list(self.history[start_index:])
+
+    def load_history_dicts(self, history_dicts: List[Dict[str, Any]]):
+        """Load history items from serialized dictionaries."""
+        with self._queue_lock:
+            self.history.clear()
+            for item in history_dicts:
+                content_obj = self._deserialize_content(item)
+                if content_obj is not None:
+                    self.history.append(content_obj)
+
+    @staticmethod
+    def _serialize_content_list(content_list: List[Any]) -> List[Dict[str, Any]]:
+        serialized = []
+        for item in content_list:
+            if hasattr(item, "to_json_dict"):
+                try:
+                    serialized.append(item.to_json_dict())
+                    continue
+                except Exception:
+                    pass
+            if hasattr(item, "model_dump"):
+                try:
+                    serialized.append(item.model_dump())
+                    continue
+                except Exception:
+                    pass
+            if isinstance(item, dict):
+                serialized.append(dict(item))
+            else:
+                try:
+                    serialized.append(dict(item.__dict__))
+                except Exception:
+                    pass
+        return serialized
+
+    @staticmethod
+    def _deserialize_content(item: Dict[str, Any]) -> Any:
+        try:
+            from google.genai import types
+            if hasattr(types, "Content"):
+                if hasattr(types.Content, "model_validate"):
+                    return types.Content.model_validate(item)
+                if hasattr(types.Content, "from_json_dict"):
+                    return types.Content.from_json_dict(item)
+                return types.Content(**item)
+        except Exception:
+            pass
+        return item
+
     def submit_prompt(self, user_prompt: str, selection_context: Optional[str] = None, max_turns: Optional[int] = None):
         """Enqueue a user prompt to be processed by the background thread."""
         with self._queue_lock:
@@ -195,7 +260,7 @@ class CopilotAgentWorker(QtCore.QThread):
                 "Gemini API Key is missing. Please set the GEMINI_API_KEY environment variable "
                 "or enter your key in the AI Copilot settings."
             )
-            self.sig_turn_complete.emit("")
+            self.sig_turn_complete.emit("", {})
             return
 
         self.sig_status.emit("Thinking...")
