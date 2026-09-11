@@ -72,6 +72,12 @@ The implementation was delivered across clean, well-documented commits following
 | [`177d534`](../../../commit/177d534) | `feat(copilotui): add collapsible thought and work sections with markdown summaries` | [`../AICopilot/ui/agent_worker.py`](../AICopilot/ui/agent_worker.py), [`../AICopilot/ui/dock_widget.py`](../AICopilot/ui/dock_widget.py), [`../tests/unit/test_copilot_dock_widget.py`](../tests/unit/test_copilot_dock_widget.py) |
 | [`4633547`](../../../commit/4633547) | `feat(copilotui): add multiline python controls, colored json cards, and light theme styling` | [`../AICopilot/ui/dock_widget.py`](../AICopilot/ui/dock_widget.py), [`../tests/unit/test_copilot_dock_widget.py`](../tests/unit/test_copilot_dock_widget.py), [`img/copilot_refined_light_theme.png`](img/copilot_refined_light_theme.png) |
 | [`2cd57cb`](../../../commit/2cd57cb) | `feat(copilotui): add execute_python cad helpers, geometry health validation, and scripting rules` | [`../AICopilot/handlers/execute_python_ops.py`](../AICopilot/handlers/execute_python_ops.py), [`../AICopilot/ui/agent_worker.py`](../AICopilot/ui/agent_worker.py), [`../tests/unit/test_copilot_dock_widget.py`](../tests/unit/test_copilot_dock_widget.py), [`img/cube_fallback_verification.png`](img/cube_fallback_verification.png) |
+| [`3b3e306`](../../../commit/3b3e306) | `fix(cam): support shape and cutting_edge_height parameter aliases in cam_tools` | [`../AICopilot/handlers/cam_tools.py`](../AICopilot/handlers/cam_tools.py), [`../tests/unit/test_cam_wrappers.py`](../tests/unit/test_cam_wrappers.py) |
+| [`b3f4f00`](../../../commit/b3f4f00) | `feat(cam): implement face/mill_face operation via Path.Op.MillFace` | [`../AICopilot/handlers/cam_ops.py`](../AICopilot/handlers/cam_ops.py), [`../tests/unit/test_cam_wrappers.py`](../tests/unit/test_cam_wrappers.py) |
+| [`bd5a317`](../../../commit/bd5a317) | `feat(cam): detect CAM environment at startup and pre-populate PathScripts compat bridge` | [`../AICopilot/compat_pathscripts.py`](../AICopilot/compat_pathscripts.py), [`../tests/unit/test_pathscripts_compat.py`](../tests/unit/test_pathscripts_compat.py) |
+| [`beefcbe`](../../../commit/beefcbe) | `fix(cam): preserve native on-disk PathScripts submodules in compatibility bridge` | [`../AICopilot/compat_pathscripts.py`](../AICopilot/compat_pathscripts.py), [`../tests/unit/test_pathscripts_compat.py`](../tests/unit/test_pathscripts_compat.py) |
+| [`0a4f81b`](../../../commit/0a4f81b) | `feat(cam): add startup redirects and aliases for Path.Op.Face, Path.Job, and related CAM modules` | [`../AICopilot/compat_pathscripts.py`](../AICopilot/compat_pathscripts.py), [`../tests/unit/test_pathscripts_compat.py`](../tests/unit/test_pathscripts_compat.py) |
+| [`84ebc18`](../../../commit/84ebc18) | `feat(ui): add settings gear menu, auto-save toggle, model persistence, and command history stack` | [`../AICopilot/settings.py`](../AICopilot/settings.py), [`../AICopilot/ui/dock_widget.py`](../AICopilot/ui/dock_widget.py), [`../AICopilot/handlers/execute_python_ops.py`](../AICopilot/handlers/execute_python_ops.py), [`../AICopilot/handlers/base.py`](../AICopilot/handlers/base.py), [`../tests/unit/test_copilot_dock_widget.py`](../tests/unit/test_copilot_dock_widget.py) |
 
 ---
 
@@ -346,3 +352,98 @@ Two developer experience refinements were implemented in the conversation histor
 ### 3. Verification
 - **Unit Tests**: All 40 unit tests in `tests/unit/test_copilot_dock_widget.py` pass (`0.35s`), verifying both `clean_markdown_text` behavior and `TextSelectableByMouse` flags across all history widgets.
 - **Live FreeCAD Verification**: Verified live in running FreeCAD instance.
+
+---
+
+## 13. CAM Compatibility Bridge & Startup Detection
+
+### 1. Overview
+In FreeCAD 1.0+, CAM operations transitioned from legacy `PathScripts.*` modules to modern `Path.Main.*` and `Path.Op.*`. Calls in LLM-generated code or older macros such as `import PathScripts.PathJob as PathJob` or `from Path.Op.Face import Create` previously triggered `ModuleNotFoundError` or incurred repeated try/except import penalties on every operation.
+
+### 2. Implementation Details
+1. **Startup CAM Environment Detection (`AICopilot/compat_pathscripts.py`)**:
+   - `detect_cam_environment()` probes once at startup (`"modern"`, `"legacy"`, or `"none"`).
+   - Pre-populates Python's `sys.modules` at startup with all known mappings, allowing statements like `import PathScripts.PathJob as PathJob` to resolve in $O(1)$ time with zero finder overhead and zero `ImportError` exceptions.
+2. **Submodule Aliasing & Redirects**:
+   - Aliased `Path.Op.Face` and `Path.Op.Facing` $\to$ `Path.Op.MillFace`.
+   - Aliased `Path.Op.Drill` $\to$ `Path.Op.Drilling`.
+   - Aliased `Path.Job` $\to$ `Path.Main.Job`.
+   - Preserved native on-disk `Mod/CAM/PathScripts` search path (`__path__`) so internal submodules (`PathUtils`, `PathPropertyBag`) load without collision.
+3. **Operation Factory Caching (`AICopilot/handlers/cam_ops.py`)**:
+   - Eliminated repeated per-call try/except imports in `profile()`, `pocket()`, `drilling()`, `adaptive()`, `face()`, and `surface()` using cached operation factory resolvers (`_get_op_create`, `_get_job_create`).
+4. **Falsy Parameter Fix (`AICopilot/handlers/cam_tools.py`)**:
+   - Fixed parameter fallback logic so legitimately supplied `0` values (e.g. `flute_length=0`) are not dropped by Python's `or` operator.
+
+### 3. Verification
+- All 12 unit tests in `tests/unit/test_pathscripts_compat.py` pass (`0.04s`).
+- Live FreeCAD verification confirmed that `import PathScripts.PathJob as PathJob` and `from Path.Op.Face import Create` resolve instantly without exceptions.
+
+
+---
+
+## 14. Repository Line Ending Normalization & Hygiene
+
+### 1. Line Ending Standardization
+- Rewrote 33 commits on `feat_copilotui` to ensure 100% pure LF line endings across the entire branch history, completely eliminating CRLF noise in git diffs.
+- Configured repository-level `.gitattributes`:
+  ```gitattributes
+  * text=auto eol=lf
+  ```
+- Added strict global guidelines in `~/.gemini/config/AGENTS.md` enforcing binary mode or `newline='\n'` for all file writes and forbidding IDE file modification tools that spawn focus-stealing editor diff tabs.
+
+
+---
+
+## 15. AI Copilot Settings, Gear Menu & Command History Stack
+
+### 1. Persistent JSON Settings Architecture (`AICopilot/settings.py`)
+- Centralized configuration manager automatically locating `<FreeCAD UserAppDataDir>/AICopilot/settings.json` (e.g. `%APPDATA%\FreeCAD\v26-3\AICopilot\settings.json`, falling back to `~/.freecad-copilot/settings.json`).
+- Supported settings keys:
+  - `"auto_save_on_execute"`: `bool` (default: `False`).
+  - `"selected_model"`: `str` (default: `"gemini-3.6-flash"`).
+  - `"command_history"`: `List[str]` (capped at 100 entries, consecutive duplicates deduplicated).
+- Strictly reads and writes with Unix LF line endings (`newline="\n"`).
+
+### 2. Configurable Auto-Save Behavior (`AICopilot/handlers/execute_python_ops.py`, `AICopilot/handlers/base.py`)
+- Replaced unconditional `doc.save()` calls before code execution with a check against `get_setting("auto_save_on_execute", False)`.
+- When disabled (`False`, default), running Python code will not overwrite the active document file on disk, preventing unintended changes during exploratory sessions.
+
+### 3. Settings Gear Button (`⚙`) & Popup Menu (`AICopilot/ui/dock_widget.py`)
+- The top toolbar contains a dedicated `⚙` button (`QToolButton`) with tooltip `"Settings"`.
+- Features an instant popup menu (`QMenu`):
+  - **Auto-Save Before Execution**: Checkable toggle synced with `settings.json`.
+  - **Gemini API Key...**: Opens the API key input dialog.
+  - **Clear Command History**: Clears saved prompt stack.
+  - **Clear Conversation**: Resets active chat stream.
+  - **Settings Dialog...**: Opens the modal preferences dialog.
+
+### 4. Copilot Preferences Dialog (`CopilotSettingsDialog`)
+- Modal dialog providing full configuration of execution safety, default model selection, API key entry, and settings storage path inspection.
+
+### 5. Command History Stack & Hotkeys
+- Enhanced `ChatInputTextEdit` to maintain prompt history, history index, and in-progress text draft:
+  - **`Ctrl+Alt+Up`**: Cycles to earlier prompts in the history stack. Preserves in-progress drafts.
+  - **`Ctrl+Alt+Down`**: Cycles to newer prompts, restoring the uncommitted draft when returning to the bottom.
+  - **Standard `Up` / `Down` Arrow Keys**: Completely untouched for normal multi-line cursor navigation and text editing.
+  - **Mouse Navigation Buttons**: Compact `▲` and `▼` tool buttons beside the prompt box for mouse users.
+- On prompt send, non-empty prompts are automatically pushed to the history stack and persisted to `settings.json`.
+
+### 6. Visual Verification
+
+| Panel Docked with Gear & History Buttons | Settings Gear Popup Menu | Modal Preferences Dialog |
+|---|---|---|
+| ![Dock Widget with Gear & History Buttons](img/copilot_settings_history_gui.png) | ![Settings Gear Popup Menu](img/copilot_gear_menu_popup.png) | ![Copilot Preferences Dialog](img/copilot_settings_dialog_gui.png) |
+
+### 7. Verification Results
+All 59 unit tests passed:
+```powershell
+& "D:\repos\oth\FreeCAD\build\release\bin\python.exe" -m pytest tests/unit/test_copilot_dock_widget.py tests/unit/test_pathscripts_compat.py
+```
+- `test_copilot_settings_manager`: Verified defaults, set/get, deduplication, and LF file writes.
+- `test_auto_save_disabled_by_default_in_execute_python`: Verified `doc.save()` is NOT called when auto-save is False.
+- `test_auto_save_enabled_in_execute_python`: Verified `doc.save()` IS called when auto-save is True.
+- `test_auto_save_disabled_by_default_in_save_before_risky_op`: Verified `save_before_risky_op` respects setting.
+- `test_chat_input_text_edit_command_history`: Verified navigation through history and draft restoration.
+- `test_chat_input_text_edit_hotkeys`: Verified `Ctrl+Alt+Up` and `Ctrl+Alt+Down` trigger history navigation, while standard `Up`/`Down` arrow keys are unaffected.
+- `test_dock_widget_settings_menu_and_history_buttons`: Verified gear button menu, auto-save action toggle, mouse buttons, and model persistence.
+
