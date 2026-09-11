@@ -90,6 +90,8 @@ The implementation was delivered across clean, well-documented commits following
 | [`0a4f81b`](../../../commit/0a4f81b) | `feat(cam): add startup redirects and aliases for Path.Op.Face, Path.Job, and related CAM modules` | [`../AICopilot/compat_pathscripts.py`](../AICopilot/compat_pathscripts.py), [`../tests/unit/test_pathscripts_compat.py`](../tests/unit/test_pathscripts_compat.py) |
 | [`84ebc18`](../../../commit/84ebc18) | `feat(ui): add settings gear menu, auto-save toggle, model persistence, and command history stack` | [`../AICopilot/handlers/base.py`](../AICopilot/handlers/base.py), [`../AICopilot/handlers/execute_python_ops.py`](../AICopilot/handlers/execute_python_ops.py), [`../AICopilot/settings.py`](../AICopilot/settings.py), [`../AICopilot/ui/dock_widget.py`](../AICopilot/ui/dock_widget.py), [`../tests/unit/test_copilot_dock_widget.py`](../tests/unit/test_copilot_dock_widget.py) |
 | [`2199d39`](../../../commit/2199d39) | `docs(copilotui): update walkthrough with settings, gear menu, command history, and CAM bridge` | [`EMBEDDED_AI_COPILOT_WALKTHROUGH.md`](EMBEDDED_AI_COPILOT_WALKTHROUGH.md), [`img/copilot_gear_menu_popup.png`](img/copilot_gear_menu_popup.png), [`img/copilot_settings_dialog_gui.png`](img/copilot_settings_dialog_gui.png), [`img/copilot_settings_history_gui.png`](img/copilot_settings_history_gui.png) |
+| [`d6c857c`](../../../commit/d6c857c) | `docs(copilotui): align walkthrough commit history table with current branch hashes` | [`EMBEDDED_AI_COPILOT_WALKTHROUGH.md`](EMBEDDED_AI_COPILOT_WALKTHROUGH.md) |
+| [`d899a5d`](../../../commit/d899a5d) | `fix(ui): resolve startup import error for dock widget and ensure dock visibility on launch` | [`../AICopilot/InitGui.py`](../AICopilot/InitGui.py), [`../AICopilot/handlers/base.py`](../AICopilot/handlers/base.py), [`../AICopilot/handlers/execute_python_ops.py`](../AICopilot/handlers/execute_python_ops.py), [`../AICopilot/ui/dock_widget.py`](../AICopilot/ui/dock_widget.py) |
 ---
 
 ## 4. Problem Diagnostics & Root Cause Fixes
@@ -458,3 +460,59 @@ All 59 unit tests passed:
 - `test_chat_input_text_edit_hotkeys`: Verified `Ctrl+Alt+Up` and `Ctrl+Alt+Down` trigger history navigation, while standard `Up`/`Down` arrow keys are unaffected.
 - `test_dock_widget_settings_menu_and_history_buttons`: Verified gear button menu, auto-save action toggle, mouse buttons, and model persistence.
 
+---
+
+## 16. Dock Widget Startup Import Resolution & Auto-Visibility
+
+### 1. Problem Diagnostics
+When starting FreeCAD, users observed that the embedded AI Copilot panel was no longer appearing on launch. Inspection of the FreeCAD console / Report View revealed:
+```text
+AI Copilot Dock Widget initialization skipped: attempted relative import beyond top-level package
+```
+
+### 2. Root Cause Analysis
+1. **FreeCAD Mod Loader Search Path**:
+   - During workbench initialization, FreeCAD automatically adds `<UserAppDataDir>/Mod/<ModName>` (i.e. `C:\Users\jacqu\AppData\Roaming\FreeCAD\v26-3\Mod\AICopilot`) to `sys.path`.
+   - FreeCAD does *not* add the parent directory `<UserAppDataDir>/Mod` to `sys.path`.
+   - Consequently, when `InitGui.py` loaded `ui.dock_widget`, Python treated `ui` as the top-level package with no parent (`__package__ == 'ui'`).
+   - Any relative import navigating upwards (e.g. `from ..settings import ...` inside `AICopilot/ui/dock_widget.py`) threw `ValueError: attempted relative import beyond top-level package`.
+   - The same issue affected `AICopilot/handlers/base.py` and `AICopilot/handlers/execute_python_ops.py`.
+2. **Dock Widget State on Startup**:
+   - Even when dock widgets are instantiated and registered via `main_win.addDockWidget(QtCore.Qt.RightDockWidgetArea, dock)`, FreeCAD's stored workspace state (`user.cfg`) may have had the dock widget hidden or collapsed. Explicit `.show()` and `.raise_()` invocations are required to guarantee it renders visible on boot.
+
+### 3. Architecture Solutions
+1. **Multi-Tier Resilient Import Fallbacks**:
+   - In `AICopilot/ui/dock_widget.py`, `AICopilot/handlers/base.py`, and `AICopilot/handlers/execute_python_ops.py`, replaced single-tier package imports with a robust 3-tier fallback strategy:
+     ```python
+     try:
+         from ..settings import get_setting, ...
+     except (ImportError, ValueError):
+         try:
+             from AICopilot.settings import get_setting, ...
+         except (ImportError, ValueError):
+             from settings import get_setting, ...
+     ```
+2. **Mod Parent Directory Inclusion in `InitGui.py`**:
+   - Added `parent_path = os.path.dirname(path)` to `sys.path` dynamically during `InitGui.py` loading:
+     ```python
+     parent_path = os.path.dirname(path)
+     for p in (path, parent_path):
+         if p and p not in sys.path:
+             sys.path.append(p)
+     ```
+   - This ensures `AICopilot.*` absolute imports resolve cleanly and consistently across all workbenches and plugins.
+3. **Guaranteed Dock Visibility on Launch**:
+   - Added explicit calls to `self.dock_widget.show()` and `self.dock_widget.raise_()` immediately following `addDockWidget(...)` in `InitGui.py`.
+
+### 4. Visual Verification
+
+| Restored Live AI Copilot Dock Widget on Launch |
+|---|
+| ![Restored Live AI Copilot Dock Widget](img/copilot_dock_visible_live.png) |
+
+### 5. Verification Results
+- All 59 unit tests passed:
+  ```powershell
+  & "D:\repos\oth\FreeCAD\build\release\bin\python.exe" -m pytest tests/unit/test_copilot_dock_widget.py tests/unit/test_pathscripts_compat.py
+  ```
+- Live in-process FreeCAD verification confirmed that the dock widget is created, attached to the right dock area, and displayed (`isVisible: True`, `geometry: QRect(1961, 99, 599, 1023)`).
