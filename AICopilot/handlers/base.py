@@ -272,7 +272,13 @@ class BaseHandler:
         to prevent unintended document saves.
         """
         try:
-            from ..settings import get_setting
+            try:
+                from ..settings import get_setting
+            except (ImportError, ValueError):
+                try:
+                    from AICopilot.settings import get_setting
+                except (ImportError, ValueError):
+                    from settings import get_setting
             if not get_setting('auto_save_on_execute', False):
                 return
         except Exception:

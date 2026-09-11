@@ -24,8 +24,10 @@ else:
     except Exception:
         path = os.path.join(FreeCAD.getUserAppDataDir(), "Mod", "AICopilot")
 
-    if path not in sys.path:
-        sys.path.append(path)
+    parent_path = os.path.dirname(path)
+    for p in (path, parent_path):
+        if p and p not in sys.path:
+            sys.path.append(p)
 
     class GlobalAIService:
         """Global MCP socket service that runs across all workbenches."""
@@ -154,6 +156,8 @@ else:
                     else:
                         self.dock_widget = AICopilotDockWidget(main_win)
                         main_win.addDockWidget(QtCore.Qt.RightDockWidgetArea, self.dock_widget)
+                    self.dock_widget.show()
+                    self.dock_widget.raise_()
                     FreeCAD.Console.PrintMessage("AI Copilot Dock Widget initialized.\n")
             except Exception as e:
                 FreeCAD.Console.PrintWarning(f"AI Copilot Dock Widget initialization skipped: {e}\n")

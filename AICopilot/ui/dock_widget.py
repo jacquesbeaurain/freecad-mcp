@@ -30,13 +30,31 @@ else:
 
 from .agent_worker import CopilotAgentWorker, ToolCallRequest
 from .tool_bridge import DirectToolBridge
-from ..settings import (
-    append_command_history,
-    clear_command_history,
-    get_setting,
-    get_settings_file_path,
-    set_setting,
-)
+try:
+    from ..settings import (
+        append_command_history,
+        clear_command_history,
+        get_setting,
+        get_settings_file_path,
+        set_setting,
+    )
+except (ImportError, ValueError):
+    try:
+        from AICopilot.settings import (
+            append_command_history,
+            clear_command_history,
+            get_setting,
+            get_settings_file_path,
+            set_setting,
+        )
+    except (ImportError, ValueError):
+        from settings import (
+            append_command_history,
+            clear_command_history,
+            get_setting,
+            get_settings_file_path,
+            set_setting,
+        )
 
 logger = logging.getLogger("AICopilot.DockWidget")
 

@@ -372,7 +372,13 @@ class ExecutePythonOpsHandler(BaseHandler):
         # Auto-save active document before executing user code (if enabled in settings).
         # Default is False to prevent unwanted overwrites of user project files.
         try:
-            from ..settings import get_setting
+            try:
+                from ..settings import get_setting
+            except (ImportError, ValueError):
+                try:
+                    from AICopilot.settings import get_setting
+                except (ImportError, ValueError):
+                    from settings import get_setting
             if get_setting('auto_save_on_execute', False):
                 doc = FreeCAD.ActiveDocument
                 if doc and getattr(doc, 'FileName', ''):
